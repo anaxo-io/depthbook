@@ -1,7 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use orderbook::decimal::f64_to_scale9;
 use orderbook::intern::InternedString;
 use orderbook::types::{Book, Level, Side};
+use std::hint::black_box;
 
 fn benchmark_level_creation(c: &mut Criterion) {
     c.bench_function("level_creation", |b| {
