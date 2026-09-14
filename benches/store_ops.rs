@@ -5,9 +5,10 @@
 //! - Sustained throughput: 100k updates/s per instrument
 //! - Store capacity: 1000 instruments without degradation
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use orderbook::store::BookStore;
 use orderbook::types::Level;
+use std::hint::black_box;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
