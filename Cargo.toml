@@ -1,0 +1,37 @@
+[package]
+name = "orderbook"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "In-process L2 order book store with fixed-capacity sorted sides, scale-9 integer prices, and sequence-gap detection"
+repository = "https://github.com/anaxo-io/orderbook-rs"
+documentation = "https://docs.rs/orderbook"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["orderbook", "trading", "marketdata", "l2", "crypto"]
+categories = ["data-structures", "finance"]
+exclude = ["/.github", "/deny.toml", "/rust-toolchain.toml"]
+
+[dependencies]
+dashmap = "6.1"
+once_cell = "1.20"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.5"
+serial_test = "3.1"
+
+[[bench]]
+name = "book_ops"
+harness = false
+
+[[bench]]
+name = "store_ops"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
