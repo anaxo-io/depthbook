@@ -6,17 +6,18 @@
 //!
 //! # Design
 //!
-//! - **Fixed-capacity sides.** Each side of a book is a sorted `[Level; 200]` array, so
+//! - **Fixed-capacity sides.** Each side of a book is a sorted [`Level`] array, so
 //!   applying an update is a binary search plus a memmove with no allocation.
-//! - **Integer prices.** Prices and quantities are [`Scale9`] integers — `i64` values with
-//!   nine implied decimal places — so arithmetic is exact and comparisons are cheap.
+//! - **Integer prices.** Prices and quantities are [`Scale9`] fixed-point values rather
+//!   than `f64` or bare `i64`, so arithmetic is exact and an unscaled number cannot be
+//!   passed where a scaled one belongs.
 //! - **Sequence tracking.** [`BookStore::apply_delta`] rejects an update that skips a
 //!   sequence number instead of silently corrupting the book.
 //!
 //! # Example
 //!
 //! ```
-//! use orderbook::{BookStore, Level, f64_to_scale9};
+//! use orderbook::{f64_to_scale9, BookStore, Level};
 //!
 //! let store = BookStore::new();
 //!
@@ -57,10 +58,9 @@ pub mod store;
 pub mod types;
 
 pub use decimal::{
-    f64_to_scale9, scale9_add, scale9_div, scale9_mul, scale9_sub, scale9_to_f64, scale9_to_string,
-    str_to_scale9, Scale9, SCALE9,
+    f64_to_scale9, scale9_to_f64, scale9_to_string, str_to_scale9, Scale9, SCALE, SCALE9,
 };
 pub use error::{Error, Result};
 pub use intern::InternedString;
 pub use store::{BookStore, Stats};
-pub use types::{Book, Level, Side};
+pub use types::{Book, Level, Side, MAX_LEVELS};

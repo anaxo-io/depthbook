@@ -2,11 +2,18 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use orderbook::decimal::f64_to_scale9;
 use orderbook::intern::InternedString;
 use orderbook::types::{Book, Level, Side};
+use orderbook::Scale9;
 use std::hint::black_box;
+
+/// Wrap a raw scaled integer, so the benchmarks can keep using integer arithmetic.
+#[inline]
+fn s9(raw: i64) -> Scale9 {
+    Scale9::from_raw(raw)
+}
 
 fn benchmark_level_creation(c: &mut Criterion) {
     c.bench_function("level_creation", |b| {
-        b.iter(|| Level::new(black_box(50000_000000000), black_box(1_000000000)))
+        b.iter(|| Level::new(black_box(s9(50000_000000000)), black_box(s9(1_000000000))))
     });
 }
 
@@ -19,7 +26,7 @@ fn benchmark_side_insert(c: &mut Criterion) {
                 let mut bids = Side::new();
                 for i in 0..count {
                     let price = (50000 - i) * 1_000000000;
-                    bids.insert(Level::new(price, 1_000000000), true);
+                    bids.insert(Level::new(s9(price), s9(1_000000000)), true);
                 }
                 black_box(bids)
             })
@@ -32,13 +39,17 @@ fn benchmark_side_update(c: &mut Criterion) {
     let mut bids = Side::new();
     for i in 0..100 {
         let price = (50000 - i) * 1_000000000;
-        bids.insert(Level::new(price, 1_000000000), true);
+        bids.insert(Level::new(s9(price), s9(1_000000000)), true);
     }
 
     c.bench_function("side_update", |b| {
         let mut bids_clone = bids.clone();
         b.iter(|| {
-            bids_clone.update(black_box(49950_000000000), black_box(2_000000000), true);
+            bids_clone.update(
+                black_box(s9(49950_000000000)),
+                black_box(s9(2_000000000)),
+                true,
+            );
         })
     });
 }
@@ -50,12 +61,12 @@ fn benchmark_side_remove(c: &mut Criterion) {
                 let mut bids = Side::new();
                 for i in 0..100 {
                     let price = (50000 - i) * 1_000000000;
-                    bids.insert(Level::new(price, 1_000000000), true);
+                    bids.insert(Level::new(s9(price), s9(1_000000000)), true);
                 }
                 bids
             },
             |mut bids| {
-                bids.remove(black_box(49950_000000000), true);
+                bids.remove(black_box(s9(49950_000000000)), true);
                 black_box(bids)
             },
             criterion::BatchSize::SmallInput,
@@ -67,7 +78,7 @@ fn benchmark_side_best(c: &mut Criterion) {
     let mut bids = Side::new();
     for i in 0..100 {
         let price = (50000 - i) * 1_000000000;
-        bids.insert(Level::new(price, 1_000000000), true);
+        bids.insert(Level::new(s9(price), s9(1_000000000)), true);
     }
 
     c.bench_function("side_best", |b| b.iter(|| black_box(bids.best())));
@@ -77,7 +88,7 @@ fn benchmark_side_depth_within_bps(c: &mut Criterion) {
     let mut bids = Side::new();
     for i in 0..100 {
         let price = (50000 - i * 10) * 1_000000000;
-        bids.insert(Level::new(price, 1_000000000), true);
+        bids.insert(Level::new(s9(price), s9(1_000000000)), true);
     }
 
     c.bench_function("side_depth_within_bps", |b| {
@@ -107,10 +118,10 @@ fn benchmark_snapshot_mid_price(c: &mut Criterion) {
     );
     snapshot
         .bids
-        .insert(Level::new(50000_000000000, 1_000000000), true);
+        .insert(Level::new(s9(50000_000000000), s9(1_000000000)), true);
     snapshot
         .asks
-        .insert(Level::new(50010_000000000, 1_000000000), false);
+        .insert(Level::new(s9(50010_000000000), s9(1_000000000)), false);
 
     c.bench_function("snapshot_mid_price", |b| {
         b.iter(|| black_box(snapshot.mid_price()))
@@ -130,10 +141,10 @@ fn benchmark_snapshot_to_json(c: &mut Criterion) {
         let ask_price = (50010 + i) * 1_000000000;
         snapshot
             .bids
-            .insert(Level::new(bid_price, 1_000000000), true);
+            .insert(Level::new(s9(bid_price), s9(1_000000000)), true);
         snapshot
             .asks
-            .insert(Level::new(ask_price, 1_000000000), false);
+            .insert(Level::new(s9(ask_price), s9(1_000000000)), false);
     }
 
     c.bench_function("snapshot_to_json_50_levels", |b| {
@@ -178,10 +189,10 @@ fn benchmark_realistic_order_book_updates(c: &mut Criterion) {
                     let ask_price = (50010 + i) * 1_000000000;
                     snapshot
                         .bids
-                        .insert(Level::new(bid_price, 1_000000000), true);
+                        .insert(Level::new(s9(bid_price), s9(1_000000000)), true);
                     snapshot
                         .asks
-                        .insert(Level::new(ask_price, 1_000000000), false);
+                        .insert(Level::new(s9(ask_price), s9(1_000000000)), false);
                 }
                 snapshot
             },
@@ -190,7 +201,7 @@ fn benchmark_realistic_order_book_updates(c: &mut Criterion) {
                 for i in 0..100 {
                     let price = (50000 - (i % 50)) * 1_000000000;
                     let qty = ((i % 10) + 1) * 100_000_000;
-                    snapshot.bids.update(price, qty, true);
+                    snapshot.bids.update(s9(price), s9(qty), true);
                 }
                 black_box(snapshot)
             },

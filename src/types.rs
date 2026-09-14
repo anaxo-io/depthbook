@@ -1,75 +1,67 @@
 //! The book itself: levels, sides, and a full book.
 
+use crate::decimal::Scale9;
 use crate::intern::InternedString;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Order book level with scale-9 integer representation.
+/// Maximum number of levels held on one side of a book.
+pub const MAX_LEVELS: usize = 200;
+
+/// A single price level: a price and the quantity resting at it.
 ///
-/// All prices and quantities are stored as 64-bit integers with an implicit scale of 9.
-/// For example:
-/// - 123.456789 → 123_456_789_000
-/// - 10.5 → 10_500_000_000
-///
-/// This representation ensures:
-/// - No floating-point rounding errors
-/// - Fast integer arithmetic
-/// - Cache-friendly memory layout
+/// Both fields are [`Scale9`] fixed-point values, so there is no floating-point error and
+/// an unscaled number cannot be passed by mistake.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Level {
-    /// Price in scale-9 representation (e.g., 123.456789 → 123_456_789_000)
-    pub price: i64,
-    /// Quantity in scale-9 representation (e.g., 10.5 → 10_500_000_000)
-    pub qty: i64,
+    /// Price of this level.
+    pub price: Scale9,
+    /// Quantity resting at this price. Zero means the level should be removed.
+    pub qty: Scale9,
 }
 
 impl Level {
-    /// Create a new order book level.
-    ///
-    /// # Arguments
-    /// * `price` - Price in scale-9 representation
-    /// * `qty` - Quantity in scale-9 representation
+    /// Create a level.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::Level;
+    /// use orderbook::{f64_to_scale9, Level};
     ///
-    /// // Price: 50000.123456789, Qty: 1.5
-    /// let level = Level::new(50000_123456789, 1_500_000_000);
-    /// assert_eq!(level.price, 50000_123456789);
-    /// assert_eq!(level.qty, 1_500_000_000);
+    /// let level = Level::new(f64_to_scale9(50_000.5), f64_to_scale9(1.5));
+    /// assert_eq!(level.price, f64_to_scale9(50_000.5));
+    /// assert_eq!(level.qty, f64_to_scale9(1.5));
     /// ```
     #[inline]
-    pub const fn new(price: i64, qty: i64) -> Self {
+    pub const fn new(price: Scale9, qty: Scale9) -> Self {
         Self { price, qty }
     }
 
-    /// Check if this level has zero quantity (should be removed).
+    /// Whether this level has zero quantity, meaning it should be removed.
     #[inline]
     pub const fn is_empty(&self) -> bool {
-        self.qty == 0
+        self.qty.is_zero()
     }
 }
 
-/// One side (bids or asks) of an order book with fixed-size array.
+/// One side of a book: a fixed-capacity array of levels kept in price order.
 ///
-/// Uses pre-allocated array to avoid heap allocations in hot path.
-/// Maintains sorted order: bids descending by price, asks ascending by price.
+/// Bids are ordered highest price first, asks lowest first, so the best level is always
+/// at index 0. The array is pre-allocated, so applying an update never allocates.
+///
+/// Capacity is [`MAX_LEVELS`]. Inserting into a full side drops the worst level.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct Side {
-    /// Pre-allocated array of levels (max 200 levels)
-    levels: [Level; 200],
-    /// Number of active levels in the array
+    levels: [Level; MAX_LEVELS],
     count: usize,
 }
 
 impl Side {
-    /// Create a new empty order book side.
+    /// Create an empty side.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::Side;
+    /// use orderbook::Side;
     ///
     /// let side = Side::new();
     /// assert_eq!(side.count(), 0);
@@ -77,31 +69,34 @@ impl Side {
     /// ```
     pub const fn new() -> Self {
         Self {
-            levels: [Level { price: 0, qty: 0 }; 200],
+            levels: [Level {
+                price: Scale9::ZERO,
+                qty: Scale9::ZERO,
+            }; MAX_LEVELS],
             count: 0,
         }
     }
 
-    /// Get the number of active levels.
+    /// Number of levels currently held.
     #[inline]
     pub const fn count(&self) -> usize {
         self.count
     }
 
-    /// Check if this side has no levels.
+    /// Whether this side holds no levels.
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 
-    /// Get a slice of active levels.
+    /// The levels currently held, best first.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::{Side, Level};
+    /// use orderbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut side = Side::new();
-    /// side.insert(Level::new(50000_000000000, 1_000000000), false);
+    /// side.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), false);
     /// assert_eq!(side.levels().len(), 1);
     /// ```
     #[inline]
@@ -109,97 +104,76 @@ impl Side {
         &self.levels[..self.count]
     }
 
-    /// Insert or update a level maintaining sorted order.
+    /// Insert a level, or update the quantity if that price is already present.
     ///
-    /// # Arguments
-    /// * `level` - The level to insert
-    /// * `is_bid` - True for bids (descending), false for asks (ascending)
+    /// A level with zero quantity removes that price. `is_bid` selects the sort order:
+    /// descending for bids, ascending for asks.
     ///
-    /// # Returns
-    /// `true` if a new level was inserted, `false` if an existing level was updated
+    /// Returns `true` if a new level was inserted, `false` if an existing one was updated,
+    /// removed, or the side was full and the level was dropped.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::{Side, Level};
+    /// use orderbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
-    /// let level = Level::new(50000_000000000, 1_000000000);
-    /// assert!(bids.insert(level, true)); // New level inserted
+    /// let level = Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0));
+    /// assert!(bids.insert(level, true));
     /// assert_eq!(bids.count(), 1);
     ///
-    /// // Update existing level
-    /// let updated = Level::new(50000_000000000, 2_000000000);
-    /// assert!(!bids.insert(updated, true)); // Existing level updated
+    /// let updated = Level::new(f64_to_scale9(50_000.0), f64_to_scale9(2.0));
+    /// assert!(!bids.insert(updated, true));
     /// assert_eq!(bids.count(), 1);
-    /// assert_eq!(bids.best().unwrap().qty, 2_000000000);
+    /// assert_eq!(bids.best().unwrap().qty, f64_to_scale9(2.0));
     /// ```
     pub fn insert(&mut self, level: Level, is_bid: bool) -> bool {
-        // Find the insertion point using binary search
         let insert_pos = self.find_insert_position(level.price, is_bid);
 
-        // Check if we're updating an existing level
         if insert_pos < self.count && self.levels[insert_pos].price == level.price {
             if level.is_empty() {
-                // Remove the level if quantity is zero
                 self.remove_at(insert_pos);
-                return false;
             } else {
-                // Update existing level
                 self.levels[insert_pos] = level;
-                return false;
             }
+            return false;
         }
 
-        // Don't insert empty levels
         if level.is_empty() {
             return false;
         }
 
-        // Check capacity
-        if self.count >= 200 {
-            // If we're at capacity and inserting beyond the last position, ignore it
-            if insert_pos >= 200 {
+        if self.count >= MAX_LEVELS {
+            if insert_pos >= MAX_LEVELS {
                 return false;
             }
-            // Otherwise, we'll drop the last level
-            self.count = 199;
+            self.count = MAX_LEVELS - 1;
         }
 
-        // Shift elements to make room
         if insert_pos < self.count {
             self.levels
                 .copy_within(insert_pos..self.count, insert_pos + 1);
         }
 
-        // Insert the new level
         self.levels[insert_pos] = level;
         self.count += 1;
 
         true
     }
 
-    /// Remove a level at the given price.
-    ///
-    /// # Arguments
-    /// * `price` - The price of the level to remove
-    /// * `is_bid` - True for bids, false for asks
-    ///
-    /// # Returns
-    /// `true` if the level was found and removed, `false` otherwise
+    /// Remove the level at `price`, returning whether it was found.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::{Side, Level};
+    /// use orderbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
-    /// let level = Level::new(50000_000000000, 1_000000000);
-    /// bids.insert(level, true);
+    /// bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
     ///
-    /// assert!(bids.remove(50000_000000000, true));
+    /// assert!(bids.remove(f64_to_scale9(50_000.0), true));
     /// assert_eq!(bids.count(), 0);
-    /// assert!(!bids.remove(50000_000000000, true)); // Already removed
+    /// assert!(!bids.remove(f64_to_scale9(50_000.0), true));
     /// ```
-    pub fn remove(&mut self, price: i64, is_bid: bool) -> bool {
+    pub fn remove(&mut self, price: Scale9, is_bid: bool) -> bool {
         let pos = self.find_insert_position(price, is_bid);
 
         if pos < self.count && self.levels[pos].price == price {
@@ -210,52 +184,39 @@ impl Side {
         }
     }
 
-    /// Update the quantity of a level at the given price.
-    ///
-    /// If the quantity is zero, the level is removed.
-    /// If the level doesn't exist and quantity is non-zero, it's inserted.
-    ///
-    /// # Arguments
-    /// * `price` - The price of the level to update
-    /// * `qty` - The new quantity (scale-9)
-    /// * `is_bid` - True for bids, false for asks
+    /// Set the quantity at `price`, inserting or removing the level as needed.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::Side;
+    /// use orderbook::{f64_to_scale9, Side};
     ///
     /// let mut bids = Side::new();
-    /// bids.update(50000_000000000, 1_000000000, true); // Insert
+    /// bids.update(f64_to_scale9(50_000.0), f64_to_scale9(1.0), true);
     /// assert_eq!(bids.count(), 1);
     ///
-    /// bids.update(50000_000000000, 2_000000000, true); // Update
-    /// assert_eq!(bids.best().unwrap().qty, 2_000000000);
+    /// bids.update(f64_to_scale9(50_000.0), f64_to_scale9(2.0), true);
+    /// assert_eq!(bids.best().unwrap().qty, f64_to_scale9(2.0));
     ///
-    /// bids.update(50000_000000000, 0, true); // Remove
+    /// bids.update(f64_to_scale9(50_000.0), f64_to_scale9(0.0), true);
     /// assert_eq!(bids.count(), 0);
     /// ```
-    pub fn update(&mut self, price: i64, qty: i64, is_bid: bool) {
-        let level = Level::new(price, qty);
-        self.insert(level, is_bid);
+    pub fn update(&mut self, price: Scale9, qty: Scale9, is_bid: bool) {
+        self.insert(Level::new(price, qty), is_bid);
     }
 
-    /// Get the best level (first level).
-    ///
-    /// For bids, this is the highest price.
-    /// For asks, this is the lowest price.
+    /// The best level: highest price for bids, lowest for asks.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::{Side, Level};
+    /// use orderbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
     /// assert!(bids.best().is_none());
     ///
-    /// bids.insert(Level::new(50000_000000000, 1_000000000), true);
-    /// bids.insert(Level::new(49999_000000000, 2_000000000), true);
+    /// bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
+    /// bids.insert(Level::new(f64_to_scale9(49_999.0), f64_to_scale9(2.0)), true);
     ///
-    /// let best = bids.best().unwrap();
-    /// assert_eq!(best.price, 50000_000000000); // Highest price for bids
+    /// assert_eq!(bids.best().unwrap().price, f64_to_scale9(50_000.0));
     /// ```
     #[inline]
     pub fn best(&self) -> Option<Level> {
@@ -266,76 +227,53 @@ impl Side {
         }
     }
 
-    /// Calculate total liquidity within N basis points of the best price.
+    /// Total quantity resting within `bps` basis points of the best price.
     ///
-    /// # Arguments
-    /// * `bps` - Basis points (1 bps = 0.01% = 0.0001)
-    /// * `is_bid` - True for bids, false for asks
-    ///
-    /// # Returns
-    /// Total quantity (scale-9) within the specified basis points, or 0 if no levels exist
+    /// One basis point is 0.01%. Returns zero if the side is empty.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::{Side, Level};
+    /// use orderbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
-    /// // Best bid at 50000
-    /// bids.insert(Level::new(50000_000000000, 1_000000000), true);
-    /// // Bid at 49000 (2000 bps away: ~20%)
-    /// bids.insert(Level::new(49000_000000000, 2_000000000), true);
+    /// bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
+    /// bids.insert(Level::new(f64_to_scale9(49_000.0), f64_to_scale9(2.0)), true);
     ///
-    /// // Within 2500 bps should include both levels
-    /// let depth = bids.depth_within_bps(2500, true);
-    /// assert_eq!(depth, 3_000000000);
-    ///
-    /// // Within 50 bps should only include the best level
-    /// let depth = bids.depth_within_bps(50, true);
-    /// assert_eq!(depth, 1_000000000);
+    /// assert_eq!(bids.depth_within_bps(2500, true), f64_to_scale9(3.0));
+    /// assert_eq!(bids.depth_within_bps(50, true), f64_to_scale9(1.0));
     /// ```
-    pub fn depth_within_bps(&self, bps: u32, is_bid: bool) -> i64 {
+    pub fn depth_within_bps(&self, bps: u32, is_bid: bool) -> Scale9 {
         if self.count == 0 {
-            return 0;
+            return Scale9::ZERO;
         }
 
-        let best_price = self.levels[0].price;
-        if best_price == 0 {
-            return 0;
+        let best = self.levels[0].price.raw();
+        if best == 0 {
+            return Scale9::ZERO;
         }
 
-        // Calculate price threshold based on basis points
-        // For bids: threshold = best_price * (1 - bps/10000)
-        // For asks: threshold = best_price * (1 + bps/10000)
-        let bps_i64 = bps as i64;
-        let threshold = if is_bid {
-            // For bids, we want prices >= best_price * (1 - bps/10000)
-            // Using scale-9: best_price - (best_price * bps / 10000)
-            best_price - (best_price * bps_i64 / 10000)
-        } else {
-            // For asks, we want prices <= best_price * (1 + bps/10000)
-            best_price + (best_price * bps_i64 / 10000)
-        };
+        let margin = best / 10_000 * bps as i64;
+        let threshold = if is_bid { best - margin } else { best + margin };
 
-        let mut total_qty = 0i64;
-        for level in self.levels().iter() {
-            let within_range = if is_bid {
-                level.price >= threshold
+        let mut total = Scale9::ZERO;
+        for level in self.levels() {
+            let within = if is_bid {
+                level.price.raw() >= threshold
             } else {
-                level.price <= threshold
+                level.price.raw() <= threshold
             };
 
-            if within_range {
-                total_qty = total_qty.saturating_add(level.qty);
-            } else {
-                // Since levels are sorted, we can stop early
+            if !within {
+                // Levels are sorted, so everything further out is also outside the range.
                 break;
             }
+            total = total.saturating_add(level.qty);
         }
 
-        total_qty
+        total
     }
 
-    /// Clear all levels from this side.
+    /// Remove every level.
     pub fn clear(&mut self) {
         self.count = 0;
     }
@@ -347,42 +285,34 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::{Side, Level};
+    /// use orderbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
-    /// bids.insert(Level::new(50000_000000000, 1_000000000), true);
-    /// bids.insert(Level::new(49999_000000000, 2_000000000), true);
+    /// bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
+    /// bids.insert(Level::new(f64_to_scale9(49_999.0), f64_to_scale9(2.0)), true);
     ///
     /// bids.truncate(1);
     /// assert_eq!(bids.count(), 1);
-    /// assert_eq!(bids.best().unwrap().price, 50000_000000000);
+    /// assert_eq!(bids.best().unwrap().price, f64_to_scale9(50_000.0));
     /// ```
     pub fn truncate(&mut self, n: usize) {
         self.count = self.count.min(n);
     }
 
-    /// Find the insertion position for a given price using binary search.
-    ///
-    /// For bids (descending): larger prices come first
-    /// For asks (ascending): smaller prices come first
+    /// Binary search for where `price` belongs, respecting the side's sort order.
     #[inline]
-    fn find_insert_position(&self, price: i64, is_bid: bool) -> usize {
-        let levels = self.levels();
-
-        levels
+    fn find_insert_position(&self, price: Scale9, is_bid: bool) -> usize {
+        self.levels()
             .binary_search_by(|level| {
                 if is_bid {
-                    // Bids: descending order (higher prices first)
                     level.price.cmp(&price).reverse()
                 } else {
-                    // Asks: ascending order (lower prices first)
                     level.price.cmp(&price)
                 }
             })
             .unwrap_or_else(|pos| pos)
     }
 
-    /// Remove the level at the given position.
     #[inline]
     fn remove_at(&mut self, pos: usize) {
         if pos < self.count {
@@ -398,7 +328,7 @@ impl Default for Side {
     }
 }
 
-// Custom Serialize implementation that only serializes active levels
+// Serialize only the active levels; the rest of the array is padding.
 impl Serialize for Side {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -412,7 +342,6 @@ impl Serialize for Side {
     }
 }
 
-// Custom Deserialize implementation
 impl<'de> Deserialize<'de> for Side {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -428,9 +357,9 @@ impl<'de> Deserialize<'de> for Side {
             Count,
         }
 
-        struct OrderBookSideVisitor;
+        struct SideVisitor;
 
-        impl<'de> Visitor<'de> for OrderBookSideVisitor {
+        impl<'de> Visitor<'de> for SideVisitor {
             type Value = Side;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -464,67 +393,51 @@ impl<'de> Deserialize<'de> for Side {
                 let levels_vec = levels.ok_or_else(|| de::Error::missing_field("levels"))?;
                 let count = count.ok_or_else(|| de::Error::missing_field("count"))?;
 
-                // Create a new Side and copy levels
                 let mut side = Side::new();
-                for (i, level) in levels_vec
-                    .iter()
-                    .take(200.min(levels_vec.len()))
-                    .enumerate()
-                {
+                for (i, level) in levels_vec.iter().take(MAX_LEVELS).enumerate() {
                     side.levels[i] = *level;
                 }
-                side.count = count.min(200).min(levels_vec.len());
+                side.count = count.min(MAX_LEVELS).min(levels_vec.len());
 
                 Ok(side)
             }
         }
 
-        deserializer.deserialize_struct("Side", &["levels", "count"], OrderBookSideVisitor)
+        deserializer.deserialize_struct("Side", &["levels", "count"], SideVisitor)
     }
 }
 
-/// Complete order book snapshot with both sides.
-///
-/// This structure provides an atomic view of the order book at a specific point in time.
-/// It includes venue and instrument identifiers, timestamp, and sequence number.
+/// A complete order book for one instrument at one venue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Book {
-    /// Venue identifier (e.g., "binance", "coinbase")
+    /// Venue identifier, for example `binance`.
     pub venue: InternedString,
-    /// Instrument identifier (e.g., "BTC-USDT", "ETH-USD")
+    /// Instrument identifier, for example `BTC-USDT`.
     pub inst: InternedString,
-    /// Timestamp in nanoseconds since epoch
+    /// Exchange timestamp in nanoseconds since the Unix epoch.
     pub ts: u64,
-    /// Sequence number for ordering events
+    /// Sequence number of the last update applied.
     pub seq: u64,
-    /// Bid side of the order book
+    /// Bid side, highest price first.
     pub bids: Side,
-    /// Ask side of the order book
+    /// Ask side, lowest price first.
     pub asks: Side,
 }
 
 impl Book {
-    /// Create a new empty order book snapshot.
-    ///
-    /// # Arguments
-    /// * `venue` - Venue identifier
-    /// * `inst` - Instrument identifier
-    /// * `ts` - Timestamp in nanoseconds
-    /// * `seq` - Sequence number
+    /// Create an empty book.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::Book;
-    /// use orderbook::intern::InternedString;
+    /// use orderbook::{Book, InternedString};
     ///
-    /// let snapshot = Book::new(
+    /// let book = Book::new(
     ///     InternedString::new("binance"),
     ///     InternedString::new("BTC-USDT"),
-    ///     1234567890000000000,
-    ///     42
+    ///     1_700_000_000_000_000_000,
+    ///     42,
     /// );
-    /// assert_eq!(snapshot.venue.as_str(), "binance");
-    /// assert_eq!(snapshot.inst.as_str(), "BTC-USDT");
+    /// assert_eq!(book.venue.as_str(), "binance");
     /// ```
     pub const fn new(venue: InternedString, inst: InternedString, ts: u64, seq: u64) -> Self {
         Self {
@@ -537,88 +450,64 @@ impl Book {
         }
     }
 
-    /// Get the mid price (average of best bid and best ask).
+    /// Midpoint between the best bid and best ask.
     ///
-    /// Returns `None` if either side has no levels.
+    /// Returns `None` if either side is empty. A crossed book yields a midpoint outside
+    /// both sides rather than an error; see issue #1.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::{Book, Level};
-    /// use orderbook::intern::InternedString;
+    /// use orderbook::{f64_to_scale9, Book, InternedString, Level};
     ///
-    /// let mut snapshot = Book::new(
+    /// let mut book = Book::new(
     ///     InternedString::new("binance"),
     ///     InternedString::new("BTC-USDT"),
-    ///     1234567890000000000,
-    ///     42
+    ///     1_700_000_000_000_000_000,
+    ///     42,
     /// );
+    /// book.bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
+    /// book.asks.insert(Level::new(f64_to_scale9(50_010.0), f64_to_scale9(1.0)), false);
     ///
-    /// snapshot.bids.insert(Level::new(50000_000000000, 1_000000000), true);
-    /// snapshot.asks.insert(Level::new(50010_000000000, 1_000000000), false);
-    ///
-    /// let mid = snapshot.mid_price().unwrap();
-    /// assert_eq!(mid, 50005_000000000); // (50000 + 50010) / 2
+    /// assert_eq!(book.mid_price(), Some(f64_to_scale9(50_005.0)));
     /// ```
-    pub fn mid_price(&self) -> Option<i64> {
-        let best_bid = self.bids.best()?;
-        let best_ask = self.asks.best()?;
-        Some((best_bid.price + best_ask.price) / 2)
+    pub fn mid_price(&self) -> Option<Scale9> {
+        let bid = self.bids.best()?.price;
+        let ask = self.asks.best()?.price;
+        Some(Scale9::from_raw((bid.raw() + ask.raw()) / 2))
     }
 
-    /// Get the spread (difference between best ask and best bid).
+    /// Difference between the best ask and the best bid.
     ///
-    /// Returns `None` if either side has no levels.
+    /// Returns `None` if either side is empty. A crossed book yields a negative spread
+    /// rather than an error; see issue #1.
     ///
     /// # Examples
     /// ```
-    /// use orderbook::types::{Book, Level};
-    /// use orderbook::intern::InternedString;
+    /// use orderbook::{f64_to_scale9, Book, InternedString, Level};
     ///
-    /// let mut snapshot = Book::new(
+    /// let mut book = Book::new(
     ///     InternedString::new("binance"),
     ///     InternedString::new("BTC-USDT"),
-    ///     1234567890000000000,
-    ///     42
+    ///     1_700_000_000_000_000_000,
+    ///     42,
     /// );
+    /// book.bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
+    /// book.asks.insert(Level::new(f64_to_scale9(50_010.0), f64_to_scale9(1.0)), false);
     ///
-    /// snapshot.bids.insert(Level::new(50000_000000000, 1_000000000), true);
-    /// snapshot.asks.insert(Level::new(50010_000000000, 1_000000000), false);
-    ///
-    /// let spread = snapshot.spread().unwrap();
-    /// assert_eq!(spread, 10_000000000); // 50010 - 50000 = 10
+    /// assert_eq!(book.spread(), Some(f64_to_scale9(10.0)));
     /// ```
-    pub fn spread(&self) -> Option<i64> {
-        let best_bid = self.bids.best()?;
-        let best_ask = self.asks.best()?;
-        Some(best_ask.price - best_bid.price)
+    pub fn spread(&self) -> Option<Scale9> {
+        let bid = self.bids.best()?.price;
+        let ask = self.asks.best()?.price;
+        Some(ask - bid)
     }
 
-    /// Convert the snapshot to JSON for WebSocket messages.
-    ///
-    /// # Examples
-    /// ```
-    /// use orderbook::types::{Book, Level};
-    /// use orderbook::intern::InternedString;
-    ///
-    /// let mut snapshot = Book::new(
-    ///     InternedString::new("binance"),
-    ///     InternedString::new("BTC-USDT"),
-    ///     1234567890000000000,
-    ///     42
-    /// );
-    ///
-    /// snapshot.bids.insert(Level::new(50000_000000000, 1_000000000), true);
-    /// snapshot.asks.insert(Level::new(50010_000000000, 1_000000000), false);
-    ///
-    /// let json = snapshot.to_json().unwrap();
-    /// assert!(json.contains("binance"));
-    /// assert!(json.contains("BTC-USDT"));
-    /// ```
+    /// Serialise to JSON.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
 
-    /// Convert the snapshot to pretty-printed JSON.
+    /// Serialise to indented JSON.
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
@@ -627,23 +516,30 @@ impl Book {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decimal::f64_to_scale9;
+
+    const TS: u64 = 1_700_000_000_000_000_000;
+
+    fn book() -> Book {
+        Book::new(
+            InternedString::new("binance"),
+            InternedString::new("BTC-USDT"),
+            TS,
+            42,
+        )
+    }
 
     #[test]
-    fn test_order_book_level_creation() {
-        let level = Level::new(50000_123456789, 1_500_000_000);
-        assert_eq!(level.price, 50000_123456789);
-        assert_eq!(level.qty, 1_500_000_000);
+    fn level_reports_empty_on_zero_qty() {
+        let level = Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.5));
+        assert_eq!(level.price, f64_to_scale9(50_000.0));
         assert!(!level.is_empty());
+
+        assert!(Level::new(f64_to_scale9(50_000.0), Scale9::ZERO).is_empty());
     }
 
     #[test]
-    fn test_order_book_level_empty() {
-        let level = Level::new(50000_000000000, 0);
-        assert!(level.is_empty());
-    }
-
-    #[test]
-    fn test_order_book_side_new() {
+    fn new_side_is_empty() {
         let side = Side::new();
         assert_eq!(side.count(), 0);
         assert!(side.is_empty());
@@ -651,224 +547,253 @@ mod tests {
     }
 
     #[test]
-    fn test_order_book_side_insert_bids() {
+    fn bids_sort_descending() {
         let mut bids = Side::new();
 
-        // Insert levels in random order
-        assert!(bids.insert(Level::new(50000_000000000, 1_000000000), true));
-        assert!(bids.insert(Level::new(49999_000000000, 2_000000000), true));
-        assert!(bids.insert(Level::new(50001_000000000, 500000000), true));
+        assert!(bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true
+        ));
+        assert!(bids.insert(
+            Level::new(f64_to_scale9(49_999.0), f64_to_scale9(2.0)),
+            true
+        ));
+        assert!(bids.insert(
+            Level::new(f64_to_scale9(50_001.0), f64_to_scale9(0.5)),
+            true
+        ));
 
-        // Should be sorted descending
         assert_eq!(bids.count(), 3);
-        assert_eq!(bids.levels()[0].price, 50001_000000000);
-        assert_eq!(bids.levels()[1].price, 50000_000000000);
-        assert_eq!(bids.levels()[2].price, 49999_000000000);
+        assert_eq!(bids.levels()[0].price, f64_to_scale9(50_001.0));
+        assert_eq!(bids.levels()[1].price, f64_to_scale9(50_000.0));
+        assert_eq!(bids.levels()[2].price, f64_to_scale9(49_999.0));
     }
 
     #[test]
-    fn test_order_book_side_insert_asks() {
+    fn asks_sort_ascending() {
         let mut asks = Side::new();
 
-        // Insert levels in random order
-        assert!(asks.insert(Level::new(50000_000000000, 1_000000000), false));
-        assert!(asks.insert(Level::new(50001_000000000, 2_000000000), false));
-        assert!(asks.insert(Level::new(49999_000000000, 500000000), false));
+        assert!(asks.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            false
+        ));
+        assert!(asks.insert(
+            Level::new(f64_to_scale9(50_001.0), f64_to_scale9(2.0)),
+            false
+        ));
+        assert!(asks.insert(
+            Level::new(f64_to_scale9(49_999.0), f64_to_scale9(0.5)),
+            false
+        ));
 
-        // Should be sorted ascending
         assert_eq!(asks.count(), 3);
-        assert_eq!(asks.levels()[0].price, 49999_000000000);
-        assert_eq!(asks.levels()[1].price, 50000_000000000);
-        assert_eq!(asks.levels()[2].price, 50001_000000000);
+        assert_eq!(asks.levels()[0].price, f64_to_scale9(49_999.0));
+        assert_eq!(asks.levels()[1].price, f64_to_scale9(50_000.0));
+        assert_eq!(asks.levels()[2].price, f64_to_scale9(50_001.0));
     }
 
     #[test]
-    fn test_order_book_side_update_existing() {
+    fn inserting_a_known_price_updates_it() {
         let mut bids = Side::new();
 
-        bids.insert(Level::new(50000_000000000, 1_000000000), true);
+        bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
+        );
         assert_eq!(bids.count(), 1);
 
-        // Update with same price, different quantity
-        assert!(!bids.insert(Level::new(50000_000000000, 2_000000000), true));
+        assert!(!bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(2.0)),
+            true
+        ));
         assert_eq!(bids.count(), 1);
-        assert_eq!(bids.levels()[0].qty, 2_000000000);
+        assert_eq!(bids.levels()[0].qty, f64_to_scale9(2.0));
     }
 
     #[test]
-    fn test_order_book_side_remove() {
+    fn remove_takes_a_level_out() {
         let mut bids = Side::new();
 
-        bids.insert(Level::new(50000_000000000, 1_000000000), true);
-        bids.insert(Level::new(49999_000000000, 2_000000000), true);
+        bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
+        );
+        bids.insert(
+            Level::new(f64_to_scale9(49_999.0), f64_to_scale9(2.0)),
+            true,
+        );
         assert_eq!(bids.count(), 2);
 
-        assert!(bids.remove(50000_000000000, true));
+        assert!(bids.remove(f64_to_scale9(50_000.0), true));
         assert_eq!(bids.count(), 1);
-        assert_eq!(bids.levels()[0].price, 49999_000000000);
+        assert_eq!(bids.levels()[0].price, f64_to_scale9(49_999.0));
 
-        assert!(!bids.remove(50000_000000000, true)); // Already removed
+        assert!(!bids.remove(f64_to_scale9(50_000.0), true));
     }
 
     #[test]
-    fn test_order_book_side_update() {
+    fn update_inserts_then_removes() {
         let mut bids = Side::new();
 
-        // Insert new level
-        bids.update(50000_000000000, 1_000000000, true);
+        bids.update(f64_to_scale9(50_000.0), f64_to_scale9(1.0), true);
         assert_eq!(bids.count(), 1);
 
-        // Update existing level
-        bids.update(50000_000000000, 2_000000000, true);
+        bids.update(f64_to_scale9(50_000.0), f64_to_scale9(2.0), true);
         assert_eq!(bids.count(), 1);
-        assert_eq!(bids.levels()[0].qty, 2_000000000);
+        assert_eq!(bids.levels()[0].qty, f64_to_scale9(2.0));
 
-        // Remove level with zero quantity
-        bids.update(50000_000000000, 0, true);
+        bids.update(f64_to_scale9(50_000.0), Scale9::ZERO, true);
         assert_eq!(bids.count(), 0);
     }
 
     #[test]
-    fn test_order_book_side_best() {
+    fn best_is_the_top_of_book() {
         let mut bids = Side::new();
 
-        bids.insert(Level::new(50000_000000000, 1_000000000), true);
-        bids.insert(Level::new(49999_000000000, 2_000000000), true);
+        bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
+        );
+        bids.insert(
+            Level::new(f64_to_scale9(49_999.0), f64_to_scale9(2.0)),
+            true,
+        );
 
         let best = bids.best().unwrap();
-        assert_eq!(best.price, 50000_000000000);
-        assert_eq!(best.qty, 1_000000000);
+        assert_eq!(best.price, f64_to_scale9(50_000.0));
+        assert_eq!(best.qty, f64_to_scale9(1.0));
     }
 
     #[test]
-    fn test_order_book_side_depth_within_bps() {
+    fn depth_within_bps_sums_nearby_levels() {
         let mut bids = Side::new();
 
-        // Best bid at 50000
-        bids.insert(Level::new(50000_000000000, 1_000000000), true);
-        // Bid at 49000 (2000 bps = 20% away: 50000 * 0.98 = 49000)
-        bids.insert(Level::new(49000_000000000, 2_000000000), true);
-        // Bid at 45000 (10000 bps away)
-        bids.insert(Level::new(40000_000000000, 3_000000000), true);
+        bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
+        );
+        bids.insert(
+            Level::new(f64_to_scale9(49_000.0), f64_to_scale9(2.0)),
+            true,
+        );
+        bids.insert(
+            Level::new(f64_to_scale9(40_000.0), f64_to_scale9(3.0)),
+            true,
+        );
 
-        // Within 3000 bps: threshold = 50000 * (1 - 0.30) = 35000
-        // All three levels should be included
-        let depth = bids.depth_within_bps(3000, true);
-        assert_eq!(depth, 6_000000000);
-
-        // Within 50 bps: threshold = 50000 * (1 - 0.005) = 49750
-        // Only first level should be included (50000)
-        let depth = bids.depth_within_bps(50, true);
-        assert_eq!(depth, 1_000000000);
-
-        // Within 2000 bps: threshold = 50000 * (1 - 0.20) = 40000
-        // First two levels should be included (50000 and 49000, but not 40000)
-        let depth = bids.depth_within_bps(1900, true);
-        assert_eq!(depth, 3_000000000);
+        assert_eq!(bids.depth_within_bps(3000, true), f64_to_scale9(6.0));
+        assert_eq!(bids.depth_within_bps(50, true), f64_to_scale9(1.0));
+        assert_eq!(bids.depth_within_bps(1900, true), f64_to_scale9(3.0));
     }
 
     #[test]
-    fn test_order_book_snapshot_creation() {
-        let snapshot = Book::new(
-            InternedString::new("binance"),
-            InternedString::new("BTC-USDT"),
-            1234567890000000000,
-            42,
-        );
-
-        assert_eq!(snapshot.venue.as_str(), "binance");
-        assert_eq!(snapshot.inst.as_str(), "BTC-USDT");
-        assert_eq!(snapshot.ts, 1234567890000000000);
-        assert_eq!(snapshot.seq, 42);
+    fn depth_within_bps_on_empty_side_is_zero() {
+        assert_eq!(Side::new().depth_within_bps(100, true), Scale9::ZERO);
     }
 
     #[test]
-    fn test_order_book_snapshot_mid_price() {
-        let mut snapshot = Book::new(
-            InternedString::new("binance"),
-            InternedString::new("BTC-USDT"),
-            1234567890000000000,
-            42,
+    fn book_reports_mid_and_spread() {
+        let mut snapshot = book();
+
+        snapshot.bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
+        );
+        snapshot.asks.insert(
+            Level::new(f64_to_scale9(50_010.0), f64_to_scale9(1.0)),
+            false,
         );
 
-        snapshot
-            .bids
-            .insert(Level::new(50000_000000000, 1_000000000), true);
-        snapshot
-            .asks
-            .insert(Level::new(50010_000000000, 1_000000000), false);
-
-        let mid = snapshot.mid_price().unwrap();
-        assert_eq!(mid, 50005_000000000);
+        assert_eq!(snapshot.mid_price(), Some(f64_to_scale9(50_005.0)));
+        assert_eq!(snapshot.spread(), Some(f64_to_scale9(10.0)));
     }
 
     #[test]
-    fn test_order_book_snapshot_spread() {
-        let mut snapshot = Book::new(
-            InternedString::new("binance"),
-            InternedString::new("BTC-USDT"),
-            1234567890000000000,
-            42,
+    fn mid_and_spread_need_both_sides() {
+        let mut snapshot = book();
+        assert_eq!(snapshot.mid_price(), None);
+
+        snapshot.bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
         );
-
-        snapshot
-            .bids
-            .insert(Level::new(50000_000000000, 1_000000000), true);
-        snapshot
-            .asks
-            .insert(Level::new(50010_000000000, 1_000000000), false);
-
-        let spread = snapshot.spread().unwrap();
-        assert_eq!(spread, 10_000000000);
+        assert_eq!(snapshot.mid_price(), None);
+        assert_eq!(snapshot.spread(), None);
     }
 
     #[test]
-    fn test_order_book_snapshot_to_json() {
-        let mut snapshot = Book::new(
-            InternedString::new("binance"),
-            InternedString::new("BTC-USDT"),
-            1234567890000000000,
-            42,
-        );
+    fn book_round_trips_through_json() {
+        let mut snapshot = book();
 
-        snapshot
-            .bids
-            .insert(Level::new(50000_000000000, 1_000000000), true);
-        snapshot
-            .asks
-            .insert(Level::new(50010_000000000, 1_000000000), false);
+        snapshot.bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
+        );
+        snapshot.asks.insert(
+            Level::new(f64_to_scale9(50_010.0), f64_to_scale9(1.0)),
+            false,
+        );
 
         let json = snapshot.to_json().unwrap();
         assert!(json.contains("binance"));
         assert!(json.contains("BTC-USDT"));
+
+        let back: Book = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.bids.count(), 1);
+        assert_eq!(back.bids.best().unwrap().price, f64_to_scale9(50_000.0));
+        assert_eq!(back.asks.best().unwrap().price, f64_to_scale9(50_010.0));
     }
 
     #[test]
-    fn test_order_book_side_clear() {
+    fn clear_empties_a_side() {
         let mut bids = Side::new();
-        bids.insert(Level::new(50000_000000000, 1_000000000), true);
-        bids.insert(Level::new(49999_000000000, 2_000000000), true);
+        bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
+        );
+        bids.insert(
+            Level::new(f64_to_scale9(49_999.0), f64_to_scale9(2.0)),
+            true,
+        );
         assert_eq!(bids.count(), 2);
 
         bids.clear();
-        assert_eq!(bids.count(), 0);
         assert!(bids.is_empty());
     }
 
     #[test]
-    fn test_order_book_side_capacity() {
+    fn a_full_side_drops_the_worst_level() {
         let mut bids = Side::new();
 
-        // Fill up to capacity
-        for i in 0..200 {
-            let price = (50000 - i) * 1_000000000;
-            bids.insert(Level::new(price, 1_000000000), true);
+        for i in 0..MAX_LEVELS {
+            let price = f64_to_scale9(50_000.0 - i as f64);
+            bids.insert(Level::new(price, f64_to_scale9(1.0)), true);
         }
-        assert_eq!(bids.count(), 200);
+        assert_eq!(bids.count(), MAX_LEVELS);
 
-        // Try to insert beyond capacity (should drop the worst level)
-        bids.insert(Level::new(50001_000000000, 1_000000000), true);
-        assert_eq!(bids.count(), 200);
-        assert_eq!(bids.levels()[0].price, 50001_000000000);
+        bids.insert(
+            Level::new(f64_to_scale9(50_001.0), f64_to_scale9(1.0)),
+            true,
+        );
+        assert_eq!(bids.count(), MAX_LEVELS);
+        assert_eq!(bids.levels()[0].price, f64_to_scale9(50_001.0));
+    }
+
+    #[test]
+    fn truncate_keeps_the_best_levels() {
+        let mut bids = Side::new();
+        for i in 0..10 {
+            bids.insert(
+                Level::new(f64_to_scale9(50_000.0 - i as f64), f64_to_scale9(1.0)),
+                true,
+            );
+        }
+
+        bids.truncate(3);
+        assert_eq!(bids.count(), 3);
+        assert_eq!(bids.best().unwrap().price, f64_to_scale9(50_000.0));
+
+        bids.truncate(100);
+        assert_eq!(bids.count(), 3);
     }
 }

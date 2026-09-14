@@ -90,7 +90,8 @@ fn test_order_book_updates() {
     assert_eq!(book.bids.count(), 10); // Count shouldn't change
 
     // Remove a level by setting quantity to zero
-    book.bids.update(f64_to_scale9(2995.0), 0, true);
+    book.bids
+        .update(f64_to_scale9(2995.0), f64_to_scale9(0.0), true);
     assert_eq!(book.bids.count(), 9); // Count should decrease
 
     // Add a new level

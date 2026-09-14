@@ -73,9 +73,12 @@ fn main() -> Result<(), orderbook::Error> {
   — bids descending, asks ascending. Inserts are a binary search plus a memmove, with no
   allocation on the update path. Invariants are property-tested in
   [`tests/property_tests.rs`](tests/property_tests.rs).
-- **Exact prices.** Prices and quantities are `i64` values with nine implied decimals
-  (`Scale9`). `scale9_add`, `scale9_sub`, `scale9_mul` and `scale9_div` are overflow-checked
-  and return `Option`.
+- **Exact prices, in their own type.** Prices and quantities are `Scale9` — a
+  `#[repr(transparent)]` wrapper over an `i64` holding the value times 10⁹. Being a
+  distinct type rather than a bare integer means an unscaled number cannot be passed
+  where a scaled one belongs, the mistake that silently misprices a book by a factor of
+  a billion. `checked_add`, `checked_sub`, `checked_mul` and `checked_div` are
+  overflow-checked and scale-aware; `Display` prints the decimal value.
 - **Sequence-gap detection.** `apply_delta` compares the incoming sequence number with the
   book's. A gap returns `Error::SequenceGap` and leaves the book untouched, so a stale book
   is never silently served; a repeated sequence number is ignored. Counted in `stats()`.
@@ -120,32 +123,39 @@ cargo run --example store_usage
 cargo bench
 ```
 
-Measured on an AMD Ryzen 7 1800X (8 cores / 16 threads) with Rust 1.98.1. Criterion medians;
-your numbers will differ. These come from [`benches/`](benches/) and can be reproduced with
-the command above.
+Measured on an AMD Ryzen 7 1800X (8 cores / 16 threads) with Rust 1.98.1, machine otherwise
+idle. Criterion medians; your numbers will differ. These come from [`benches/`](benches/)
+and can be reproduced with the command above.
 
 | Operation | Median |
 | --- | --- |
-| `apply_delta`, 1 level | 128 ns |
-| `apply_delta`, 20 levels | 126 ns |
-| `apply_snapshot`, 10 levels per side | 961 ns |
-| `apply_snapshot`, 100 levels per side | 4.37 µs |
-| `apply_snapshot`, 200 levels per side | 8.37 µs |
+| `apply_delta`, 1 level | 119 ns |
+| `apply_delta`, 20 levels | 129 ns |
+| `apply_snapshot`, 10 levels per side | 962 ns |
+| `apply_snapshot`, 100 levels per side | 4.34 µs |
+| `apply_snapshot`, 200 levels per side | 8.82 µs |
 | `bbo` | 94 ns |
-| `snapshot`, any depth | ~1.20 µs |
+| `snapshot`, any depth | ~470 ns |
 | `Side::best` | 1.7 ns |
-| `f64_to_scale9` | 3.4 ns |
-| 100,000 sequential deltas | 12.2 ms (≈8.2M deltas/sec) |
+| `f64_to_scale9` | 3.1 ns |
+| 100,000 sequential deltas | 12.1 ms (≈8.3M deltas/sec) |
 
-Two things worth reading off that table:
+Three things worth reading off that table:
 
 - **`apply_delta` is flat in the number of levels.** Updating 20 levels costs about the same
   as updating one, because the work is dominated by the lock acquisition and the sequence
   bookkeeping rather than by the memmoves.
 - **`snapshot` is flat in `depth`, and that is a wart, not a feature.** Asking for 5 levels
-  costs the same ~1.2 µs as asking for 100, because the book is cloned in full and then
-  truncated. If you only need top of book, `bbo` is 13× cheaper. This is tracked in
+  costs the same ~470 ns as asking for 100, because the book is cloned in full and then
+  truncated. If you only need top of book, `bbo` is about 5× cheaper. This is tracked in
   [#2](https://github.com/anaxo-io/orderbook-rs/issues/2).
+- **`Scale9` costs nothing.** Wrapping prices in a distinct type rather than using a bare
+  `i64` left every benchmark within noise of the untyped version, which is what
+  `#[repr(transparent)]` and inlined accessors should give you.
+
+Concurrency benchmarks measure whole batches rather than single calls: `concurrent_reads/8`
+runs 8 threads doing 1,000 reads each in 2.05 ms total, and `write_with_concurrent_reads`
+performs 100 writes against 4 live reader threads in 168 µs.
 
 Concurrency benchmarks measure whole batches rather than single calls: `concurrent_reads/8`
 runs 8 threads doing 1,000 reads each in 1.58 ms total, and `write_with_concurrent_reads`

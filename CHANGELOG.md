@@ -7,24 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-14
+
+### Changed
+
+- **Breaking.** Prices and quantities are now a distinct `Scale9` type rather than a bare
+  `i64`. `Level::new`, `Side::insert`, `Side::remove`, `Side::update`,
+  `Side::depth_within_bps`, `Book::mid_price` and `Book::spread` all take or return
+  `Scale9`. This makes it a compile error to pass an unscaled number where a scaled one is
+  expected — previously `Level::new(50_000, 1)` compiled and silently meant `0.00005`.
+
+  Migrating: wrap raw scaled integers with `Scale9::from_raw(..)`, or build values with
+  `f64_to_scale9(..)` / `str_to_scale9(..)`. `.raw()` recovers the underlying `i64`. Code
+  already using `f64_to_scale9` needs no change.
+
+- **Breaking.** The free functions `scale9_add`, `scale9_sub`, `scale9_mul` and
+  `scale9_div` are replaced by inherent methods `Scale9::checked_add`, `checked_sub`,
+  `checked_mul` and `checked_div`. `Scale9` also implements `Add`, `Sub`, `Neg`, `Ord`
+  and `Display`.
+
+- `Side`'s capacity is exposed as the `MAX_LEVELS` constant instead of a bare `200`.
+
+- Update `criterion` from 0.5 to 0.8. Benchmarks now use `std::hint::black_box`;
+  `criterion::black_box` is deprecated in 0.8 and the crate builds benchmarks with
+  warnings denied ([#6](https://github.com/anaxo-io/orderbook-rs/pull/6)).
+
+- Update `serial_test` from 3.1 to 4.0
+  ([#7](https://github.com/anaxo-io/orderbook-rs/pull/7)).
+
+- Update `actions/checkout` from 4 to 7 in CI
+  ([#5](https://github.com/anaxo-io/orderbook-rs/pull/5)).
+
+### Added
+
+- `Scale9::ZERO`, `Scale9::ONE`, `Scale9::from_raw`, `Scale9::raw`, `Scale9::from_f64`,
+  `Scale9::to_f64`, `Scale9::is_zero` and `Scale9::saturating_add`. `Debug` and `Display`
+  print the decimal value rather than the raw integer.
+
+### Fixed
+
+- Stop Dependabot proposing bumps to the `dtolnay/rust-toolchain` reference in the MSRV
+  job. That tag names the Rust toolchain version rather than the action version, so a bump
+  asked CI to install a Rust release that does not exist. The reference now changes only
+  when the MSRV itself changes, alongside `rust-version` in `Cargo.toml`
+  ([#4](https://github.com/anaxo-io/orderbook-rs/pull/4)).
+
 ## [0.1.0] - 2026-09-14
 
 Initial release.
 
 ### Added
 
-- `Side`: one side of a book as a fixed-capacity (200 level) sorted array with binary-search insert.
+- `Side`: one side of a book as a fixed-capacity (200 level) sorted array with
+  binary-search insert.
 - `Book`: a venue/instrument book with bid and ask sides, timestamp, and sequence number.
-- `BookStore`: concurrent store keyed by venue and instrument, with snapshot and delta application, best bid/offer queries, staleness checks, and sequence-gap detection.
-- `Scale9`: 9-decimal fixed-point integer representation with checked arithmetic (`scale9_add`, `scale9_sub`, `scale9_mul`, `scale9_div`) and conversion helpers.
+- `BookStore`: concurrent store keyed by venue and instrument, with snapshot and delta
+  application, best bid/offer queries, staleness checks, and sequence-gap detection.
+- `Scale9`: 9-decimal fixed-point representation with checked arithmetic and conversion
+  helpers.
 - `InternedString`: deduplicated venue and instrument identifiers.
-- Property tests covering book invariants, concurrency tests covering reader/writer contention, and Criterion benchmarks for book and store operations.
+- Property tests covering book invariants, concurrency tests covering reader/writer
+  contention, and Criterion benchmarks for book and store operations.
 
 ### Known issues
 
-- `Book::mid_price` and `Book::spread` do not check for a crossed book (best bid above best ask); a crossed book yields a negative spread rather than an error. Tracked in [#1](https://github.com/anaxo-io/orderbook-rs/issues/1).
-- `BookStore::snapshot` clones the full book before truncating to the requested depth, so a shallow read costs the same as a deep one. Tracked in [#2](https://github.com/anaxo-io/orderbook-rs/issues/2).
-- `Side::insert` silently drops the worst level when a side is at capacity. This is intentional for top-of-book use but is not reported to the caller. Tracked in [#3](https://github.com/anaxo-io/orderbook-rs/issues/3).
+- `Book::mid_price` and `Book::spread` do not check for a crossed book (best bid above
+  best ask); a crossed book yields a negative spread rather than an error. Tracked in
+  [#1](https://github.com/anaxo-io/orderbook-rs/issues/1).
+- `BookStore::snapshot` clones the full book before truncating to the requested depth, so
+  a shallow read costs the same as a deep one. Tracked in
+  [#2](https://github.com/anaxo-io/orderbook-rs/issues/2).
+- `Side::insert` silently drops the worst level when a side is at capacity. This is
+  intentional for top-of-book use but is not reported to the caller. Tracked in
+  [#3](https://github.com/anaxo-io/orderbook-rs/issues/3).
 
-[Unreleased]: https://github.com/anaxo-io/orderbook-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/anaxo-io/orderbook-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/anaxo-io/orderbook-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/anaxo-io/orderbook-rs/releases/tag/v0.1.0

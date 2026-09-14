@@ -8,6 +8,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use orderbook::store::BookStore;
 use orderbook::types::Level;
+use orderbook::Scale9;
 use std::hint::black_box;
 use std::sync::Arc;
 use std::thread;
@@ -20,7 +21,7 @@ fn generate_levels(count: usize, base_price: i64, is_bid: bool) -> Vec<Level> {
             let offset = if is_bid { -(i as i64) } else { i as i64 };
             let price = base_price + offset * 1_000000000;
             let qty = 1_000000000 + (i as i64 * 100_000_000);
-            Level::new(price, qty)
+            Level::new(Scale9::from_raw(price), Scale9::from_raw(qty))
         })
         .collect()
 }
