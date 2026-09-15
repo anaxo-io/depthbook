@@ -1,6 +1,6 @@
 [package]
 name = "orderbook"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 description = "In-process L2 order book store with fixed-capacity sorted sides, scale-9 integer prices, and sequence-gap detection"

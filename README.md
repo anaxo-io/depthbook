@@ -22,7 +22,7 @@ is the better fit; this is a data structure you can drop into whatever you alrea
 
 ```toml
 [dependencies]
-orderbook = { git = "https://github.com/anaxo-io/orderbook-rs", tag = "v0.2.0" }
+orderbook = { git = "https://github.com/anaxo-io/orderbook-rs", tag = "v0.3.0" }
 ```
 
 ```rust
