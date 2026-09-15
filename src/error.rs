@@ -17,6 +17,18 @@ pub enum Error {
         received: u64,
     },
 
+    /// A snapshot is older than the book it would replace.
+    ///
+    /// The snapshot was not applied. If the venue reset its sequence numbers, call
+    /// `BookStore::remove` before applying the first snapshot of the new sequence.
+    #[error("snapshot seq {received} is older than book seq {current}; if the venue reset its sequence, call remove first")]
+    OutOfOrder {
+        /// The book's current sequence number.
+        current: u64,
+        /// The snapshot's sequence number.
+        received: u64,
+    },
+
     /// The input could not be turned into a valid book.
     #[error("invalid data: {0}")]
     InvalidData(String),

@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::types::{Book, Level};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::RwLock;
 
 /// A single order book plus the metadata needed to read it without taking the lock.
@@ -15,6 +15,7 @@ pub struct BookState {
     book: RwLock<Book>,
     last_update_ns: AtomicU64,
     sequence: AtomicU64,
+    gapped: AtomicBool,
 }
 
 impl BookState {
@@ -27,6 +28,7 @@ impl BookState {
             book: RwLock::new(book),
             last_update_ns: AtomicU64::new(ts),
             sequence: AtomicU64::new(seq),
+            gapped: AtomicBool::new(false),
         }
     }
 
@@ -52,23 +54,35 @@ impl BookState {
         Some((book.bids.best()?, book.asks.best()?))
     }
 
-    /// Replace the book wholesale, as when applying a snapshot.
+    /// Replace the book wholesale, as when applying a snapshot, and clear the gapped flag.
+    ///
+    /// The check runs under the write lock, so a snapshot cannot roll back a delta that
+    /// was applied concurrently. Returns [`Error::OutOfOrder`] and leaves the book
+    /// untouched if the snapshot's sequence number is below the book's.
     ///
     /// `ts` is the exchange timestamp in nanoseconds since the Unix epoch.
-    pub fn replace(&self, new_book: Book, ts: u64) {
+    pub fn replace(&self, new_book: Book, ts: u64) -> Result<()> {
         let seq = new_book.seq;
         let mut book = self.write();
+        if seq < book.seq {
+            return Err(Error::OutOfOrder {
+                current: book.seq,
+                received: seq,
+            });
+        }
         *book = new_book;
         self.last_update_ns.store(ts, Ordering::Release);
         self.sequence.store(seq, Ordering::Release);
+        self.gapped.store(false, Ordering::Release);
+        Ok(())
     }
 
     /// Apply a delta if `seq` is the next sequence number.
     ///
     /// The check happens under the write lock, so two writers cannot both pass it.
     /// Returns `Ok(true)` if applied, `Ok(false)` if `seq` is already known, and
-    /// [`Error::SequenceGap`] if `seq` skips ahead; in the latter two cases the book is
-    /// untouched.
+    /// [`Error::SequenceGap`] if `seq` skips ahead; in the latter two cases the levels are
+    /// untouched. A gap marks the book as gapped until the next snapshot.
     ///
     /// `ts` is the exchange timestamp in nanoseconds since the Unix epoch. It is recorded
     /// as given: the store does not substitute its own clock, so staleness is measured
@@ -80,6 +94,8 @@ impl BookState {
         let mut book = self.write();
         let expected = book.seq.saturating_add(1);
         if seq > expected {
+            book.gapped = true;
+            self.gapped.store(true, Ordering::Release);
             return Err(Error::SequenceGap {
                 expected,
                 received: seq,
@@ -98,6 +114,14 @@ impl BookState {
         Ok(true)
     }
 
+    /// Whether a delta was rejected for a sequence gap since the last snapshot.
+    ///
+    /// Read without taking the lock. A gapped book still serves its last good state.
+    #[inline]
+    pub fn is_gapped(&self) -> bool {
+        self.gapped.load(Ordering::Acquire)
+    }
+
     /// The book's sequence number, read without taking the lock.
     #[inline]
     pub fn sequence(&self) -> u64 {
@@ -112,8 +136,8 @@ impl BookState {
 
     /// Report whether the last update is older than `max_age_ms`.
     ///
-    /// Compares the venue timestamp against the local clock, so a venue whose clock runs
-    /// behind will look stale. A book timestamped in the future is never stale.
+    /// Compares the venue timestamp against the local wall clock, so a venue whose clock
+    /// runs behind will look stale. A book timestamped in the future is never stale.
     pub fn is_stale(&self, max_age_ms: u64) -> bool {
         let last_update = self.last_update_ns.load(Ordering::Acquire);
         let now = std::time::SystemTime::now()
@@ -253,7 +277,7 @@ mod tests {
             .bids
             .insert(Level::new(f64_to_scale9(1.0), f64_to_scale9(1.0)), true);
 
-        state.replace(fresh, TS + 5);
+        state.replace(fresh, TS + 5).unwrap();
 
         assert_eq!(state.sequence(), 100);
         assert_eq!(state.last_update_ns(), TS + 5);

@@ -258,7 +258,7 @@ impl Side {
             return Scale9::ZERO;
         }
 
-        let margin = (i128::from(best) * i128::from(bps) / 10_000) as i64;
+        let margin = i64::try_from(i128::from(best) * i128::from(bps) / 10_000).unwrap_or(i64::MAX);
         let threshold = if is_bid {
             best.saturating_sub(margin)
         } else {
@@ -440,6 +440,9 @@ impl<'de> Deserialize<'de> for Side {
                 if !strictly(|a, b| a.price > b.price) && !strictly(|a, b| a.price < b.price) {
                     return Err(de::Error::custom("levels are not strictly sorted by price"));
                 }
+                if levels_vec.iter().any(|l| l.price.raw() < 0) {
+                    return Err(de::Error::custom("level price must not be negative"));
+                }
                 if levels_vec.iter().any(|l| l.qty.raw() <= 0) {
                     return Err(de::Error::custom("level quantity must be positive"));
                 }
@@ -459,7 +462,10 @@ impl<'de> Deserialize<'de> for Side {
 }
 
 /// A complete order book for one instrument at one venue.
+///
+/// Deserialisation checks that bids are strictly descending and asks strictly ascending.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "BookRepr")]
 pub struct Book {
     /// Venue identifier, for example `binance`.
     pub venue: InternedString,
@@ -473,6 +479,49 @@ pub struct Book {
     pub bids: Side,
     /// Ask side, lowest price first.
     pub asks: Side,
+    /// Whether a delta was rejected for a sequence gap since the last snapshot.
+    ///
+    /// A gapped book is the last good state, which is behind the venue by an unknown
+    /// amount. Cleared by the next snapshot.
+    #[serde(default)]
+    pub gapped: bool,
+}
+
+/// Wire shape of [`Book`]; converting into a `Book` validates side orientation.
+#[derive(Deserialize)]
+struct BookRepr {
+    venue: InternedString,
+    inst: InternedString,
+    ts: u64,
+    seq: u64,
+    bids: Side,
+    asks: Side,
+    #[serde(default)]
+    gapped: bool,
+}
+
+impl TryFrom<BookRepr> for Book {
+    type Error = String;
+
+    fn try_from(r: BookRepr) -> Result<Self, String> {
+        let descending = |side: &Side| side.levels().is_sorted_by(|a, b| a.price > b.price);
+        let ascending = |side: &Side| side.levels().is_sorted_by(|a, b| a.price < b.price);
+        if !descending(&r.bids) {
+            return Err("bids must be strictly descending by price".into());
+        }
+        if !ascending(&r.asks) {
+            return Err("asks must be strictly ascending by price".into());
+        }
+        Ok(Book {
+            venue: r.venue,
+            inst: r.inst,
+            ts: r.ts,
+            seq: r.seq,
+            bids: r.bids,
+            asks: r.asks,
+            gapped: r.gapped,
+        })
+    }
 }
 
 impl Book {
@@ -498,6 +547,7 @@ impl Book {
             seq,
             bids: Side::new(),
             asks: Side::new(),
+            gapped: false,
         }
     }
 
@@ -799,6 +849,48 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_rejects_reversed_book_sides() {
+        let mut snapshot = book();
+        snapshot
+            .bids
+            .insert(Level::new(f64_to_scale9(2.0), f64_to_scale9(1.0)), true);
+        snapshot
+            .bids
+            .insert(Level::new(f64_to_scale9(1.0), f64_to_scale9(1.0)), true);
+        snapshot
+            .asks
+            .insert(Level::new(f64_to_scale9(3.0), f64_to_scale9(1.0)), false);
+        snapshot
+            .asks
+            .insert(Level::new(f64_to_scale9(4.0), f64_to_scale9(1.0)), false);
+        let json = snapshot.to_json().unwrap();
+        assert!(serde_json::from_str::<Book>(&json).is_ok());
+
+        // Swap the sides' payloads: bids ascending, asks descending.
+        let bids = serde_json::to_string(&snapshot.bids).unwrap();
+        let asks = serde_json::to_string(&snapshot.asks).unwrap();
+        let swapped = json
+            .replace(&bids, "@@")
+            .replace(&asks, &bids)
+            .replace("@@", &asks);
+        let err = serde_json::from_str::<Book>(&swapped)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("bids must be strictly descending"), "{err}");
+    }
+
+    #[test]
+    fn depth_within_bps_saturates_on_huge_margins() {
+        let mut bids = Side::new();
+        bids.insert(
+            Level::new(Scale9::from_raw(i64::MAX), f64_to_scale9(1.0)),
+            true,
+        );
+        bids.insert(Level::new(Scale9::from_raw(1), f64_to_scale9(2.0)), true);
+        assert_eq!(bids.depth_within_bps(u32::MAX, true), f64_to_scale9(3.0));
+    }
+
+    #[test]
     fn deserialize_rejects_invalid_sides() {
         let level = |p: f64, q: f64| {
             format!(
@@ -820,6 +912,7 @@ mod tests {
             side(&[level(1.0, 1.0), level(1.0, 2.0)], 2), // duplicate price
             side(&[level(1.0, 0.0)], 1), // zero qty
             side(&[level(1.0, -1.0)], 1), // negative qty
+            side(&[level(-1.0, 1.0)], 1), // negative price
         ];
         for json in bad {
             assert!(serde_json::from_str::<Side>(&json).is_err(), "{json}");

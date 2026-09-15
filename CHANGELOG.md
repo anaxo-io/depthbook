@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `BookStore::is_gapped` and a `gapped` field on `Book`: set when a delta is rejected for
+  a sequence gap, cleared by the next snapshot. The book keeps serving its last good
+  state; this is how a reader finds out that state is behind the venue.
+- `BookStore::remove`, for delisted instruments and for venues that restart their
+  sequence numbering after a reconnect.
+- `Stats::snapshots_rejected`.
+
+### Changed
+
+- **Breaking.** `apply_snapshot` rejects a snapshot whose sequence number is below the
+  book's with the new `Error::OutOfOrder`, checked under the write lock, so a stale
+  snapshot can no longer roll back a concurrently applied delta. `BookState::replace`
+  returns `Result` accordingly.
+- **Breaking.** `apply_snapshot` and `apply_delta` reject negative prices and quantities
+  with `Error::InvalidData`, matching what deserialisation already enforced.
+- Deserialising a `Book` checks that bids descend and asks ascend; a `Side` on its own
+  still accepts either direction because it does not know which it is.
+
+### Fixed
+
+- `str_to_scale9` accepts the exact lower bound `-9223372036.854775808`.
+- `depth_within_bps` saturates instead of truncating when the margin overflows `i64`.
+- Benchmarks: `apply_delta/N` is now labelled as N levels per side, the multi-instrument
+  benchmark advances a sequence counter per instrument instead of resubmitting the same
+  one, the concurrent-write benchmark starts its readers behind a barrier, and the layout
+  stream replays against a fresh copy each sample.
+
 ## [0.4.0] - 2026-09-15
 
 ### Changed
@@ -14,7 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking.** `Side::levels` returns a best-first iterator instead of a slice. Levels
   are now stored best-last so a top-of-book insert moves almost nothing, and lookup scans
   the best 16 levels before binary-searching the rest. On a top-heavy update stream at
-  200 levels the side is about four times faster; deep inserts are unchanged within noise.
+  200 levels the side is about four times faster; an insert in the middle of a 200-level
+  side is about 12% slower (112 ns to 126 ns).
   Measured in `benches/side_layout.rs` and written up in the README.
 - `BookStore` looks up books without allocating: the two `String` copies of venue and
   instrument on every `apply_delta`, `bbo`, `snapshot` and `is_stale` call are gone.

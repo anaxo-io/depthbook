@@ -217,13 +217,18 @@ fn run<L: Ladder>(c: &mut Criterion, name: &str) {
         let mut g = c.benchmark_group(format!("layout/{name}"));
         g.throughput(Throughput::Elements(updates.len() as u64));
         g.bench_with_input(BenchmarkId::new("stream", depth), &depth, |b, _| {
-            let mut s = base.clone();
-            b.iter(|| {
-                for u in &updates {
-                    s.insert(black_box(*u));
-                }
-                black_box(s.best())
-            })
+            // A fresh copy per iteration, so every sample replays the same stream against
+            // the same starting book instead of a book mutated by earlier samples.
+            b.iter_batched_ref(
+                || base.clone(),
+                |s| {
+                    for u in &updates {
+                        s.insert(black_box(*u));
+                    }
+                    black_box(s.best())
+                },
+                criterion::BatchSize::SmallInput,
+            )
         });
         g.finish();
 

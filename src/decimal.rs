@@ -275,22 +275,25 @@ pub fn str_to_scale9(s: &str) -> Result<Scale9> {
         return Err(invalid());
     }
 
-    let mut raw: i64 = 0;
+    // Accumulate in i128 so the magnitude of i64::MIN is representable before negation.
+    let mut raw: i128 = 0;
     for b in int_part.bytes() {
         raw = raw
             .checked_mul(10)
-            .and_then(|r| r.checked_add(i64::from(b - b'0')))
+            .and_then(|r| r.checked_add(i128::from(b - b'0')))
             .ok_or_else(invalid)?;
     }
-    raw = raw.checked_mul(SCALE9).ok_or_else(invalid)?;
-    let mut frac: i64 = 0;
+    raw = raw.checked_mul(i128::from(SCALE9)).ok_or_else(invalid)?;
+    let mut frac: i128 = 0;
     for b in frac_part.bytes() {
-        frac = frac * 10 + i64::from(b - b'0');
+        frac = frac * 10 + i128::from(b - b'0');
     }
-    frac *= 10_i64.pow(SCALE - frac_part.len() as u32);
-    raw = raw.checked_add(frac).ok_or_else(invalid)?;
+    raw += frac * 10_i128.pow(SCALE - frac_part.len() as u32);
+    if negative {
+        raw = -raw;
+    }
 
-    Ok(Scale9(if negative { -raw } else { raw }))
+    i64::try_from(raw).map(Scale9).map_err(|_| invalid())
 }
 
 /// Format a [`Scale9`] with a fixed number of decimal places, rounding half away from zero.
@@ -358,6 +361,11 @@ mod tests {
             str_to_scale9("9223372036.854775807").unwrap(),
             Scale9::from_raw(i64::MAX)
         );
+        assert_eq!(
+            str_to_scale9("-9223372036.854775808").unwrap(),
+            Scale9::from_raw(i64::MIN)
+        );
+        assert!(str_to_scale9("-9223372036.854775809").is_err());
         assert_eq!(
             str_to_scale9("-1.5").unwrap(),
             Scale9::from_raw(-1_500_000_000)

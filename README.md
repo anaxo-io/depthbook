@@ -84,17 +84,24 @@ fn main() -> Result<(), orderbook::Error> {
   a billion. `checked_add`, `checked_sub`, `checked_mul` and `checked_div` are
   overflow-checked and scale-aware; `Display` prints the decimal value.
 - **Sequence-gap detection.** `apply_delta` compares the incoming sequence number with the
-  book's, under the book's write lock. A gap returns `Error::SequenceGap` and leaves the
-  book untouched: readers keep seeing the last good state, and the caller is expected to
-  re-request a snapshot. A repeated sequence number is ignored. Counted in `stats()`.
+  book's, under the book's write lock. A gap returns `Error::SequenceGap`, leaves the
+  levels untouched and flags the book as gapped: readers keep seeing the last good state,
+  and can tell it is behind the venue through `is_gapped()` or the `gapped` field on a
+  snapshot. The next snapshot clears the flag. A repeated sequence number is ignored, and a
+  snapshot older than the book is rejected with `Error::OutOfOrder`; call `remove()` first
+  if the venue has restarted its numbering. All of it is counted in `stats()`.
 - **Absolute quantities.** A delta level carries the new total quantity at that price, not
   a change to it; zero deletes the level. This is the aggregated L2 model most venues
   publish, so there are no order IDs and no queue positions.
 - **Exchange timestamps preserved.** Both `apply_snapshot` and `apply_delta` record the
-  timestamp you pass, not the local clock, so `is_stale` measures the venue's view of time.
+  timestamp you pass, not the local clock. `is_stale` compares that venue timestamp with
+  the local wall clock, so a feed that stops sending goes stale even if the connection
+  stays up.
 - **Concurrent reads.** Books live in a `DashMap` keyed by venue and instrument, each behind
-  an `RwLock`, with sequence and timestamp mirrored into atomics so gap and staleness checks
-  never wait on a reader. Exercised in [`tests/concurrency_tests.rs`](tests/concurrency_tests.rs).
+  an `RwLock`. Sequence, timestamp and the gapped flag are mirrored into atomics, so
+  `is_stale` and `is_gapped` never take the lock. Writes do, which is what makes the
+  sequence check race-free. Exercised in
+  [`tests/concurrency_tests.rs`](tests/concurrency_tests.rs).
 - **Interned identifiers.** Venue and instrument strings are deduplicated through a global
   cache, so a book copy does not copy the strings.
 
@@ -139,25 +146,26 @@ and can be reproduced with the command above.
 
 | Operation | Median |
 | --- | --- |
-| `apply_delta`, 1 level | 116 ns |
-| `apply_delta`, 5 levels | 184 ns |
-| `apply_delta`, 20 levels | 778 ns |
+| `apply_delta`, 1 level per side | 131 ns |
+| `apply_delta`, 5 levels per side | 212 ns |
+| `apply_delta`, 20 levels per side | 837 ns |
 | `apply_snapshot`, 10 levels per side | 927 ns |
 | `apply_snapshot`, 100 levels per side | 2.21 µs |
 | `apply_snapshot`, 200 levels per side | 3.76 µs |
-| `bbo` | 65 ns |
+| `bbo` | 68 ns |
 | `snapshot`, any depth | ~470 ns |
 | `Side::best` | 1.4 ns |
 | `f64_to_scale9` | 3.1 ns |
-| 100,000 sequential deltas | 13.5 ms (≈7.4M deltas/sec) |
+| 100,000 sequential deltas | 14.4 ms (≈6.9M deltas/sec) |
 
 Three things worth reading off that table:
 
-- **`apply_delta` is about 35 ns per level on top of a fixed 80 ns.** The fixed part is
-  the map probe, the write lock and the sequence check; the per-level part is the scan
-  and the in-place update. The benchmark updates levels 5 to 24 from the top, so most of
-  them fall past the 16-level linear scan into the binary-search path; updates at the very
-  top are cheaper. An earlier version of this table showed the call as flat in the number
+- **`apply_delta` is about 19 ns per level on top of a fixed 110 ns.** The fixed part is
+  the map probe, input validation, the write lock and the sequence check; the per-level
+  part is the scan and the in-place update. Each benchmark row updates that many levels on *both* sides,
+  so the 20-level row touches 40 levels. It updates levels 5 to 24 from the top, so most
+  of them fall past the 16-level linear scan into the binary-search path; updates at the
+  very top are cheaper. An earlier version of this table showed the call as flat in the number
   of levels, which was a benchmark bug: it resubmitted the same sequence number and
   measured the duplicate short-circuit.
 - **`snapshot` is flat in `depth`, and that is a wart, not a feature.** Asking for 5 levels
@@ -170,7 +178,8 @@ Three things worth reading off that table:
 
 Concurrency benchmarks measure whole batches rather than single calls: `concurrent_reads/8`
 runs 8 threads doing 1,000 reads each in 1.75 ms total, and `write_with_concurrent_reads`
-performs 100 writes against 4 live reader threads in 286 µs.
+performs 100 writes against 4 reader threads, started behind a barrier so they are
+spinning on `snapshot` before the first write, in 371 µs.
 
 ### Side layout
 
@@ -185,13 +194,13 @@ levels get re-added. Same machine as above.
 
 | Layout | stream, 50 levels | stream, 200 levels | update best, 200 | add+remove at top, 200 | add+remove mid, 200 |
 | --- | --- | --- | --- | --- | --- |
-| `BTreeMap<Scale9, Scale9>` | 27.5 µs | 31.4 µs | 14.1 ns | 49.0 ns | 52.5 ns |
-| `Vec<Level>`, best-first, binary search | 24.8 µs | 46.1 µs | 14.0 ns | 166.4 ns | 114.4 ns |
-| fixed array, best-first, binary search (v0.3.0) | 23.9 µs | 41.4 µs | 12.6 ns | 163.8 ns | 112.1 ns |
-| fixed array, best-last, binary search | 19.1 µs | 19.1 µs | 12.6 ns | 31.8 ns | 111.5 ns |
-| fixed array, best-first, linear scan | 11.0 µs | 26.8 µs | 2.9 ns | 120.6 ns | 166.3 ns |
-| fixed array, best-last, linear scan | 8.4 µs | 8.4 µs | 4.6 ns | 12.1 ns | 194.4 ns |
-| fixed array, best-last, scan 16 then binary (v0.4.0) | 10.2 µs | 10.3 µs | 4.1 ns | 13.3 ns | 125.6 ns |
+| `BTreeMap<Scale9, Scale9>` | 26.9 µs | 30.2 µs | 14.1 ns | 49.0 ns | 52.5 ns |
+| `Vec<Level>`, best-first, binary search | 27.5 µs | 44.6 µs | 14.0 ns | 166.4 ns | 114.4 ns |
+| fixed array, best-first, binary search (v0.3.0) | 25.2 µs | 42.8 µs | 12.6 ns | 163.8 ns | 112.1 ns |
+| fixed array, best-last, binary search | 20.8 µs | 25.4 µs | 12.6 ns | 31.8 ns | 111.5 ns |
+| fixed array, best-first, linear scan | 12.7 µs | 28.3 µs | 2.9 ns | 120.6 ns | 166.3 ns |
+| fixed array, best-last, linear scan | 8.2 µs | 8.2 µs | 4.6 ns | 12.1 ns | 194.4 ns |
+| fixed array, best-last, scan 16 then binary (v0.4.0) | 10.2 µs | 10.2 µs | 4.1 ns | 13.3 ns | 125.6 ns |
 
 Two standard-library baselines are included because "why not a `BTreeMap`?" is the
 question a fixed array has to answer. It does, but only after the layout change: the

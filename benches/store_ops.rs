@@ -74,7 +74,8 @@ fn bench_apply_snapshot(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark applying deltas with different update sizes
+/// Benchmark applying deltas with different update sizes. The parameter is the number of
+/// levels **per side**, so `apply_delta/5` touches 10 levels.
 fn bench_apply_delta(c: &mut Criterion) {
     let mut group = c.benchmark_group("apply_delta");
 
@@ -198,24 +199,24 @@ fn bench_write_with_concurrent_reads(c: &mut Criterion) {
 
         let mut seq = 1;
         b.iter(|| {
-            // Start 4 reader threads that will read during writes
+            // Start 4 reader threads and wait at a barrier so they are live before the
+            // first write, rather than still being spawned.
             let readers_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let barrier = Arc::new(std::sync::Barrier::new(5));
             let reader_handles: Vec<_> = (0..4)
                 .map(|_| {
                     let store = Arc::clone(&store);
                     let active = Arc::clone(&readers_active);
+                    let barrier = Arc::clone(&barrier);
                     thread::spawn(move || {
-                        let mut count = 0;
+                        barrier.wait();
                         while active.load(std::sync::atomic::Ordering::Relaxed) {
                             let _ = store.snapshot("binance", "BTC-USDT", 20);
-                            count += 1;
-                            if count > 100 {
-                                break;
-                            }
                         }
                     })
                 })
                 .collect();
+            barrier.wait();
 
             // Perform 100 writes
             for _ in 0..100 {
@@ -297,14 +298,25 @@ fn bench_multi_instrument_capacity(c: &mut Criterion) {
 
                 let delta_bids = generate_levels(5, 49995_000000000, true);
                 let delta_asks = generate_levels(5, 50005_000000000, false);
+                let insts: Vec<String> = (0..num_instruments)
+                    .map(|i| format!("INST-{}", i))
+                    .collect();
+                // One sequence counter per instrument, so every delta is a real update.
+                let mut seqs = vec![1u64; num_instruments];
 
                 b.iter(|| {
-                    // Update random instruments
                     for i in 0..100 {
-                        let inst_idx = i % num_instruments;
-                        let inst = format!("INST-{}", inst_idx);
+                        let idx = i % num_instruments;
+                        seqs[idx] += 1;
                         store
-                            .apply_delta("binance", &inst, &delta_bids, &delta_asks, 2, now_ns())
+                            .apply_delta(
+                                "binance",
+                                &insts[idx],
+                                &delta_bids,
+                                &delta_asks,
+                                seqs[idx],
+                                now_ns(),
+                            )
                             .unwrap();
                     }
                 });

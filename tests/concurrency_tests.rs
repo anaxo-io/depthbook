@@ -218,9 +218,12 @@ fn test_sequence_gap_with_concurrent_reads() {
     // Reader should still be able to read
     reader_handle.join().unwrap();
 
-    // The last good state (seq 1) is still served; the gap is reported, not hidden.
+    // The last good state (seq 1) is still served, and it is flagged as gapped so a
+    // reader can tell it is behind the venue.
     let snapshot = store.snapshot("binance", "BTC-USDT", 0).unwrap();
     assert_eq!(snapshot.seq, 1);
+    assert!(snapshot.gapped);
+    assert!(store.is_gapped("binance", "BTC-USDT"));
     assert_eq!(store.stats().sequence_gaps, 1);
 }
 

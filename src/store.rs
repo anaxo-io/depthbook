@@ -72,6 +72,8 @@ pub struct Stats {
     pub snapshots_applied: u64,
     /// Number of deltas applied.
     pub deltas_applied: u64,
+    /// Number of snapshots rejected for being older than the book they would replace.
+    pub snapshots_rejected: u64,
 }
 
 /// Stores order books keyed by venue and instrument.
@@ -109,6 +111,23 @@ pub struct BookStore {
     sequence_gaps: AtomicU64,
     snapshots_applied: AtomicU64,
     deltas_applied: AtomicU64,
+    snapshots_rejected: AtomicU64,
+}
+
+/// Reject levels no feed can legitimately send.
+///
+/// Quantity may be zero, which deletes the level in a delta, but not negative. Price may
+/// not be negative.
+fn validate(levels: &[Level]) -> Result<()> {
+    for level in levels {
+        if level.qty.raw() < 0 || level.price.raw() < 0 {
+            return Err(Error::InvalidData(format!(
+                "negative price or quantity: {} @ {}",
+                level.qty, level.price
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl BookStore {
@@ -117,13 +136,20 @@ impl BookStore {
         Self::default()
     }
 
-    /// Replace a book with a full snapshot.
+    /// Replace a book with a full snapshot and clear its gapped flag.
     ///
     /// Creates the book if it does not exist. Levels with zero quantity are skipped.
-    /// A snapshot always wins: it does not consult the current sequence number, which is
-    /// what makes it usable for recovery after a gap.
+    /// A snapshot does not need to be the next sequence number, which is what makes it
+    /// usable for recovery after a gap, but it may not be older than the book.
     ///
     /// `ts` is the exchange timestamp in nanoseconds since the Unix epoch.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidData`] if any level has a negative price or quantity.
+    /// - [`Error::OutOfOrder`] if `seq` is below the book's current sequence number. The
+    ///   snapshot is **not** applied and is counted in [`Stats::snapshots_rejected`]. If
+    ///   the venue reset its sequence numbers, call [`BookStore::remove`] first.
     pub fn apply_snapshot(
         &self,
         venue: &str,
@@ -133,6 +159,9 @@ impl BookStore {
         seq: u64,
         ts: u64,
     ) -> Result<()> {
+        validate(bids)?;
+        validate(asks)?;
+
         let mut book = Book::new(
             InternedString::new(venue),
             InternedString::new(inst),
@@ -154,7 +183,10 @@ impl BookStore {
         }
 
         let state = self.get_or_create(venue, inst, seq, ts);
-        state.replace(book, ts);
+        state.replace(book, ts).inspect_err(|e| {
+            self.snapshots_rejected.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(venue, inst, error = %e, "snapshot rejected");
+        })?;
         self.snapshots_applied.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
@@ -167,10 +199,12 @@ impl BookStore {
     ///
     /// # Errors
     ///
+    /// - [`Error::InvalidData`] if any level has a negative price or quantity.
     /// - [`Error::NotFound`] if no snapshot has been applied for this venue and instrument.
     /// - [`Error::SequenceGap`] if `seq` skips ahead of the book's sequence number. The
-    ///   update is **not** applied; the caller should re-request a snapshot. The gap is
-    ///   counted in [`Stats::sequence_gaps`].
+    ///   update is **not** applied and the book is flagged as gapped (see
+    ///   [`BookStore::is_gapped`]) until the next snapshot. The gap is counted in
+    ///   [`Stats::sequence_gaps`].
     ///
     /// An update whose sequence number is already known is ignored and returns `Ok`.
     pub fn apply_delta(
@@ -182,6 +216,9 @@ impl BookStore {
         seq: u64,
         ts: u64,
     ) -> Result<()> {
+        validate(bids)?;
+        validate(asks)?;
+
         let state = self
             .books
             .get(&(venue, inst) as &dyn KeyLike)
@@ -255,6 +292,26 @@ impl BookStore {
         }
     }
 
+    /// Report whether a book has rejected a delta for a sequence gap since its last
+    /// snapshot.
+    ///
+    /// A gapped book still serves its last good state; this is how a reader finds out
+    /// that state is behind the venue. A book that does not exist counts as gapped.
+    pub fn is_gapped(&self, venue: &str, inst: &str) -> bool {
+        match self.books.get(&(venue, inst) as &dyn KeyLike) {
+            Some(state) => state.is_gapped(),
+            None => true,
+        }
+    }
+
+    /// Forget a book, returning whether it existed.
+    ///
+    /// Call this before the first snapshot of a new sequence when a venue restarts its
+    /// numbering, for example after a reconnect, or when an instrument is delisted.
+    pub fn remove(&self, venue: &str, inst: &str) -> bool {
+        self.books.remove(&(venue, inst) as &dyn KeyLike).is_some()
+    }
+
     /// Current counters. See [`Stats`].
     pub fn stats(&self) -> Stats {
         Stats {
@@ -262,6 +319,7 @@ impl BookStore {
             sequence_gaps: self.sequence_gaps.load(Ordering::Relaxed),
             snapshots_applied: self.snapshots_applied.load(Ordering::Relaxed),
             deltas_applied: self.deltas_applied.load(Ordering::Relaxed),
+            snapshots_rejected: self.snapshots_rejected.load(Ordering::Relaxed),
         }
     }
 
@@ -446,5 +504,90 @@ mod tests {
             .apply_delta("binance", "BTC-USDT", &[], &[], 3, TS + 1)
             .is_ok());
         assert_eq!(store.stats().deltas_applied, 0);
+    }
+
+    fn one(price: f64) -> Vec<Level> {
+        vec![Level::new(f64_to_scale9(price), f64_to_scale9(1.0))]
+    }
+
+    #[test]
+    fn gap_flags_the_book_until_a_snapshot_clears_it() {
+        let store = BookStore::new();
+        assert!(store.is_gapped("binance", "BTC-USDT"));
+
+        store
+            .apply_snapshot("binance", "BTC-USDT", &one(1.0), &one(2.0), 1, TS)
+            .unwrap();
+        assert!(!store.is_gapped("binance", "BTC-USDT"));
+
+        assert!(store
+            .apply_delta("binance", "BTC-USDT", &[], &[], 5, TS)
+            .is_err());
+        assert!(store.is_gapped("binance", "BTC-USDT"));
+        assert!(store.snapshot("binance", "BTC-USDT", 0).unwrap().gapped);
+        // Still serving the last good state.
+        assert!(store.bbo("binance", "BTC-USDT").is_some());
+
+        store
+            .apply_snapshot("binance", "BTC-USDT", &one(1.0), &one(2.0), 5, TS)
+            .unwrap();
+        assert!(!store.is_gapped("binance", "BTC-USDT"));
+        assert!(!store.snapshot("binance", "BTC-USDT", 0).unwrap().gapped);
+    }
+
+    #[test]
+    fn older_snapshot_is_rejected_until_the_book_is_removed() {
+        let store = BookStore::new();
+        store
+            .apply_snapshot("binance", "BTC-USDT", &one(1.0), &one(2.0), 10, TS)
+            .unwrap();
+
+        let err = store
+            .apply_snapshot("binance", "BTC-USDT", &one(3.0), &one(4.0), 9, TS)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            Error::OutOfOrder {
+                current: 10,
+                received: 9
+            }
+        );
+        assert!(err.to_string().contains("call remove first"));
+        assert_eq!(store.stats().snapshots_rejected, 1);
+        assert_eq!(store.snapshot("binance", "BTC-USDT", 0).unwrap().seq, 10);
+
+        // Same sequence is a harmless re-snapshot.
+        store
+            .apply_snapshot("binance", "BTC-USDT", &one(1.0), &one(2.0), 10, TS)
+            .unwrap();
+
+        assert!(store.remove("binance", "BTC-USDT"));
+        assert!(!store.remove("binance", "BTC-USDT"));
+        store
+            .apply_snapshot("binance", "BTC-USDT", &one(3.0), &one(4.0), 1, TS)
+            .unwrap();
+        assert_eq!(store.snapshot("binance", "BTC-USDT", 0).unwrap().seq, 1);
+    }
+
+    #[test]
+    fn negative_prices_and_quantities_are_rejected() {
+        let store = BookStore::new();
+        let bad_qty = vec![Level::new(f64_to_scale9(1.0), f64_to_scale9(-1.0))];
+        let bad_price = vec![Level::new(f64_to_scale9(-1.0), f64_to_scale9(1.0))];
+
+        assert!(matches!(
+            store.apply_snapshot("binance", "BTC-USDT", &bad_qty, &[], 1, TS),
+            Err(Error::InvalidData(_))
+        ));
+        assert!(store.snapshot("binance", "BTC-USDT", 0).is_none());
+
+        store
+            .apply_snapshot("binance", "BTC-USDT", &one(1.0), &one(2.0), 1, TS)
+            .unwrap();
+        assert!(matches!(
+            store.apply_delta("binance", "BTC-USDT", &[], &bad_price, 2, TS),
+            Err(Error::InvalidData(_))
+        ));
+        assert_eq!(store.snapshot("binance", "BTC-USDT", 0).unwrap().seq, 1);
     }
 }
