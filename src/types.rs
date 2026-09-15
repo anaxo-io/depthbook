@@ -252,8 +252,12 @@ impl Side {
             return Scale9::ZERO;
         }
 
-        let margin = best / 10_000 * bps as i64;
-        let threshold = if is_bid { best - margin } else { best + margin };
+        let margin = (i128::from(best) * i128::from(bps) / 10_000) as i64;
+        let threshold = if is_bid {
+            best.saturating_sub(margin)
+        } else {
+            best.saturating_add(margin)
+        };
 
         let mut total = Scale9::ZERO;
         for level in self.levels() {
@@ -393,11 +397,27 @@ impl<'de> Deserialize<'de> for Side {
                 let levels_vec = levels.ok_or_else(|| de::Error::missing_field("levels"))?;
                 let count = count.ok_or_else(|| de::Error::missing_field("count"))?;
 
-                let mut side = Side::new();
-                for (i, level) in levels_vec.iter().take(MAX_LEVELS).enumerate() {
-                    side.levels[i] = *level;
+                if count != levels_vec.len() {
+                    return Err(de::Error::custom("count does not match levels"));
                 }
-                side.count = count.min(MAX_LEVELS).min(levels_vec.len());
+                if count > MAX_LEVELS {
+                    return Err(de::Error::custom("more than MAX_LEVELS levels"));
+                }
+                // The book relies on binary search, so a side must be strictly monotonic.
+                // Either direction is accepted since `Side` does not know if it is a bid.
+                let strictly = |ok: fn(&Level, &Level) -> bool| {
+                    levels_vec.windows(2).all(|w| ok(&w[0], &w[1]))
+                };
+                if !strictly(|a, b| a.price > b.price) && !strictly(|a, b| a.price < b.price) {
+                    return Err(de::Error::custom("levels are not strictly sorted by price"));
+                }
+                if levels_vec.iter().any(|l| l.qty.raw() <= 0) {
+                    return Err(de::Error::custom("level quantity must be positive"));
+                }
+
+                let mut side = Side::new();
+                side.levels[..count].copy_from_slice(&levels_vec);
+                side.count = count;
 
                 Ok(side)
             }
@@ -473,13 +493,16 @@ impl Book {
     pub fn mid_price(&self) -> Option<Scale9> {
         let bid = self.bids.best()?.price;
         let ask = self.asks.best()?.price;
-        Some(Scale9::from_raw((bid.raw() + ask.raw()) / 2))
+        // Computed in i128 so the sum cannot overflow; the mean of two i64s fits an i64.
+        Some(Scale9::from_raw(
+            ((i128::from(bid.raw()) + i128::from(ask.raw())) / 2) as i64,
+        ))
     }
 
     /// Difference between the best ask and the best bid.
     ///
-    /// Returns `None` if either side is empty. A crossed book yields a negative spread
-    /// rather than an error; see issue #1.
+    /// Returns `None` if either side is empty or the difference overflows. A crossed book
+    /// yields a negative spread rather than an error; see issue #1.
     ///
     /// # Examples
     /// ```
@@ -499,7 +522,7 @@ impl Book {
     pub fn spread(&self) -> Option<Scale9> {
         let bid = self.bids.best()?.price;
         let ask = self.asks.best()?.price;
-        Some(ask - bid)
+        ask.checked_sub(bid)
     }
 
     /// Serialise to JSON.
@@ -742,6 +765,34 @@ mod tests {
         assert_eq!(back.bids.count(), 1);
         assert_eq!(back.bids.best().unwrap().price, f64_to_scale9(50_000.0));
         assert_eq!(back.asks.best().unwrap().price, f64_to_scale9(50_010.0));
+    }
+
+    #[test]
+    fn deserialize_rejects_invalid_sides() {
+        let level = |p: f64, q: f64| {
+            format!(
+                r#"{{"price":{},"qty":{}}}"#,
+                f64_to_scale9(p).raw(),
+                f64_to_scale9(q).raw()
+            )
+        };
+        let side = |levels: &[String], count: usize| {
+            format!(r#"{{"levels":[{}],"count":{count}}}"#, levels.join(","))
+        };
+
+        let ok = side(&[level(2.0, 1.0), level(1.0, 1.0)], 2);
+        assert_eq!(serde_json::from_str::<Side>(&ok).unwrap().count(), 2);
+
+        let bad = [
+            side(&[level(1.0, 1.0)], 2), // count mismatch
+            side(&[level(1.0, 1.0), level(2.0, 1.0), level(1.5, 1.0)], 3), // unsorted
+            side(&[level(1.0, 1.0), level(1.0, 2.0)], 2), // duplicate price
+            side(&[level(1.0, 0.0)], 1), // zero qty
+            side(&[level(1.0, -1.0)], 1), // negative qty
+        ];
+        for json in bad {
+            assert!(serde_json::from_str::<Side>(&json).is_err(), "{json}");
+        }
     }
 
     #[test]

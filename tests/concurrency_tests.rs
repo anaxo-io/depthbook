@@ -218,9 +218,60 @@ fn test_sequence_gap_with_concurrent_reads() {
     // Reader should still be able to read
     reader_handle.join().unwrap();
 
-    // Store should still be readable
-    let snapshot = store.snapshot("binance", "BTC-USDT", 0);
-    assert!(snapshot.is_some());
+    // The last good state (seq 1) is still served; the gap is reported, not hidden.
+    let snapshot = store.snapshot("binance", "BTC-USDT", 0).unwrap();
+    assert_eq!(snapshot.seq, 1);
+    assert_eq!(store.stats().sequence_gaps, 1);
+}
+
+#[test]
+fn test_concurrent_writers_apply_each_sequence_once() {
+    let store = Arc::new(BookStore::new());
+    store
+        .apply_snapshot("binance", "BTC-USDT", &[], &[], 0, now_ns())
+        .unwrap();
+
+    // Every writer submits the same sequence range with a distinct price; each sequence
+    // must be applied exactly once, so exactly one price survives and no gap is reported.
+    let writers = 8;
+    let deltas = 2_000;
+    let handles: Vec<_> = (0..writers)
+        .map(|w| {
+            let store = Arc::clone(&store);
+            thread::spawn(move || {
+                let level = Level::new(f64_to_scale9(1.0 + w as f64), f64_to_scale9(1.0));
+                let mut applied = 0;
+                for seq in 1..=deltas {
+                    let mut bids = [Level::new(level.price, f64_to_scale9(0.0)); 8];
+                    for (i, bid) in bids.iter_mut().enumerate() {
+                        bid.price = f64_to_scale9(1.0 + i as f64);
+                    }
+                    bids[w] = level;
+                    if store
+                        .apply_delta("binance", "BTC-USDT", &bids, &[], seq, now_ns())
+                        .is_ok()
+                    {
+                        applied += 1;
+                    }
+                }
+                applied
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let stats = store.stats();
+    assert_eq!(stats.sequence_gaps, 0);
+    assert_eq!(stats.deltas_applied, deltas);
+    let book = store.snapshot("binance", "BTC-USDT", 0).unwrap();
+    assert_eq!(book.seq, deltas);
+    assert_eq!(
+        book.bids.count(),
+        1,
+        "each delta wipes the other writers' prices"
+    );
 }
 
 #[test]

@@ -133,38 +133,34 @@ impl BookStore {
             inst: inst.to_string(),
         })?;
 
-        let current_seq = state.sequence();
-        if seq > current_seq + 1 {
-            self.sequence_gaps.fetch_add(1, Ordering::Relaxed);
-            tracing::warn!(
-                venue,
-                inst,
-                expected = current_seq + 1,
-                received = seq,
-                "sequence gap; book needs a fresh snapshot"
-            );
-            return Err(Error::SequenceGap {
-                expected: current_seq + 1,
-                received: seq,
-            });
-        }
-
-        if seq <= current_seq {
+        let applied = state
+            .apply(
+                |book| {
+                    for level in bids {
+                        book.bids.insert(*level, true);
+                    }
+                    for level in asks {
+                        book.asks.insert(*level, false);
+                    }
+                },
+                seq,
+                ts,
+            )
+            .inspect_err(|e| {
+                if let Error::SequenceGap { expected, received } = e {
+                    self.sequence_gaps.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        venue,
+                        inst,
+                        expected,
+                        received,
+                        "sequence gap; book needs a fresh snapshot"
+                    );
+                }
+            })?;
+        if !applied {
             return Ok(());
         }
-
-        state.apply(
-            |book| {
-                for level in bids {
-                    book.bids.insert(*level, true);
-                }
-                for level in asks {
-                    book.asks.insert(*level, false);
-                }
-            },
-            seq,
-            ts,
-        );
         self.deltas_applied.fetch_add(1, Ordering::Relaxed);
 
         Ok(())

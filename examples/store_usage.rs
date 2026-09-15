@@ -1,4 +1,4 @@
-//! BookStore usage example demonstrating non-blocking reads and updates.
+//! BookStore usage example demonstrating concurrent reads and updates.
 //!
 //! This example shows:
 //! - Creating an in-memory order book store

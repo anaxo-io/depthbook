@@ -5,7 +5,6 @@ edition = "2021"
 rust-version = "1.85"
 description = "In-process L2 order book store with fixed-capacity sorted sides, scale-9 integer prices, and sequence-gap detection"
 repository = "https://github.com/anaxo-io/orderbook-rs"
-documentation = "https://docs.rs/orderbook"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["orderbook", "trading", "marketdata", "l2", "crypto"]

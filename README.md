@@ -22,7 +22,7 @@ is the better fit; this is a data structure you can drop into whatever you alrea
 
 ```toml
 [dependencies]
-orderbook = { git = "https://github.com/anaxo-io/orderbook-rs", tag = "v0.1.0" }
+orderbook = { git = "https://github.com/anaxo-io/orderbook-rs", tag = "v0.2.0" }
 ```
 
 ```rust
@@ -80,8 +80,12 @@ fn main() -> Result<(), orderbook::Error> {
   a billion. `checked_add`, `checked_sub`, `checked_mul` and `checked_div` are
   overflow-checked and scale-aware; `Display` prints the decimal value.
 - **Sequence-gap detection.** `apply_delta` compares the incoming sequence number with the
-  book's. A gap returns `Error::SequenceGap` and leaves the book untouched, so a stale book
-  is never silently served; a repeated sequence number is ignored. Counted in `stats()`.
+  book's, under the book's write lock. A gap returns `Error::SequenceGap` and leaves the
+  book untouched: readers keep seeing the last good state, and the caller is expected to
+  re-request a snapshot. A repeated sequence number is ignored. Counted in `stats()`.
+- **Absolute quantities.** A delta level carries the new total quantity at that price, not
+  a change to it; zero deletes the level. This is the aggregated L2 model most venues
+  publish, so there are no order IDs and no queue positions.
 - **Exchange timestamps preserved.** Both `apply_snapshot` and `apply_delta` record the
   timestamp you pass, not the local clock, so `is_stale` measures the venue's view of time.
 - **Concurrent reads.** Books live in a `DashMap` keyed by venue and instrument, each behind
@@ -101,7 +105,8 @@ fn main() -> Result<(), orderbook::Error> {
 - **Bounded depth.** A side holds at most 200 levels. Beyond that the worst level is dropped,
   which suits top-of-book work and does not suit full-depth archival.
 - **One writer per instrument** is the intended pattern. Concurrent writers to the same book
-  are safe but will interleave their sequence numbers and trigger spurious gaps.
+  are safe, and each sequence number is applied at most once, but interleaved feeds will
+  report gaps against each other.
 
 ## Documentation
 
@@ -129,24 +134,27 @@ and can be reproduced with the command above.
 
 | Operation | Median |
 | --- | --- |
-| `apply_delta`, 1 level | 119 ns |
-| `apply_delta`, 20 levels | 129 ns |
-| `apply_snapshot`, 10 levels per side | 962 ns |
-| `apply_snapshot`, 100 levels per side | 4.34 µs |
-| `apply_snapshot`, 200 levels per side | 8.82 µs |
-| `bbo` | 94 ns |
-| `snapshot`, any depth | ~470 ns |
+| `apply_delta`, 1 level | 166 ns |
+| `apply_delta`, 5 levels | 329 ns |
+| `apply_delta`, 20 levels | 889 ns |
+| `apply_snapshot`, 10 levels per side | 977 ns |
+| `apply_snapshot`, 100 levels per side | 4.29 µs |
+| `apply_snapshot`, 200 levels per side | 8.97 µs |
+| `bbo` | 93 ns |
+| `snapshot`, any depth | ~490 ns |
 | `Side::best` | 1.7 ns |
-| `f64_to_scale9` | 3.1 ns |
-| 100,000 sequential deltas | 12.1 ms (≈8.3M deltas/sec) |
+| `f64_to_scale9` | 3.2 ns |
+| 100,000 sequential deltas | 18.8 ms (≈5.3M deltas/sec) |
 
 Three things worth reading off that table:
 
-- **`apply_delta` is flat in the number of levels.** Updating 20 levels costs about the same
-  as updating one, because the work is dominated by the lock acquisition and the sequence
-  bookkeeping rather than by the memmoves.
+- **`apply_delta` is about 40 ns per level on top of a fixed 130 ns.** The fixed part is
+  the map lookup, the write lock and the sequence check; the per-level part is a binary
+  search plus an in-place update. An earlier version of this table showed the call as flat
+  in the number of levels, which was a benchmark bug: it resubmitted the same sequence
+  number and measured the duplicate short-circuit.
 - **`snapshot` is flat in `depth`, and that is a wart, not a feature.** Asking for 5 levels
-  costs the same ~470 ns as asking for 100, because the book is cloned in full and then
+  costs the same ~490 ns as asking for 100, because the book is cloned in full and then
   truncated. If you only need top of book, `bbo` is about 5× cheaper. This is tracked in
   [#2](https://github.com/anaxo-io/orderbook-rs/issues/2).
 - **`Scale9` costs nothing.** Wrapping prices in a distinct type rather than using a bare
@@ -154,12 +162,8 @@ Three things worth reading off that table:
   `#[repr(transparent)]` and inlined accessors should give you.
 
 Concurrency benchmarks measure whole batches rather than single calls: `concurrent_reads/8`
-runs 8 threads doing 1,000 reads each in 2.05 ms total, and `write_with_concurrent_reads`
-performs 100 writes against 4 live reader threads in 168 µs.
-
-Concurrency benchmarks measure whole batches rather than single calls: `concurrent_reads/8`
-runs 8 threads doing 1,000 reads each in 1.58 ms total, and `write_with_concurrent_reads`
-performs 100 writes against 4 live reader threads in 171 µs.
+runs 8 threads doing 1,000 reads each in 1.39 ms total, and `write_with_concurrent_reads`
+performs 100 writes against 4 live reader threads in 275 µs.
 
 ## Contributing
 

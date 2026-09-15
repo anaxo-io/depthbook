@@ -1,5 +1,6 @@
 //! Lock and atomic bookkeeping around a single [`Book`].
 
+use crate::error::{Error, Result};
 use crate::types::{Book, Level};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
@@ -62,16 +63,31 @@ impl BookState {
         self.sequence.store(seq, Ordering::Release);
     }
 
-    /// Mutate the book in place, as when applying a delta.
+    /// Apply a delta if `seq` is the next sequence number.
+    ///
+    /// The check happens under the write lock, so two writers cannot both pass it.
+    /// Returns `Ok(true)` if applied, `Ok(false)` if `seq` is already known, and
+    /// [`Error::SequenceGap`] if `seq` skips ahead; in the latter two cases the book is
+    /// untouched.
     ///
     /// `ts` is the exchange timestamp in nanoseconds since the Unix epoch. It is recorded
     /// as given: the store does not substitute its own clock, so staleness is measured
     /// against the venue's view of time rather than the local one.
-    pub fn apply<F>(&self, f: F, seq: u64, ts: u64)
+    pub fn apply<F>(&self, f: F, seq: u64, ts: u64) -> Result<bool>
     where
         F: FnOnce(&mut Book),
     {
         let mut book = self.write();
+        let expected = book.seq.saturating_add(1);
+        if seq > expected {
+            return Err(Error::SequenceGap {
+                expected,
+                received: seq,
+            });
+        }
+        if seq <= book.seq {
+            return Ok(false);
+        }
         f(&mut book);
 
         book.seq = seq;
@@ -79,6 +95,7 @@ impl BookState {
 
         self.last_update_ns.store(ts, Ordering::Release);
         self.sequence.store(seq, Ordering::Release);
+        Ok(true)
     }
 
     /// The book's sequence number, read without taking the lock.
@@ -168,16 +185,18 @@ mod tests {
         let state = BookState::new(b);
         assert!(state.bbo().is_none());
 
-        state.apply(
-            |book| {
-                book.asks.insert(
-                    Level::new(f64_to_scale9(50001.0), f64_to_scale9(1.0)),
-                    false,
-                );
-            },
-            43,
-            TS + 1,
-        );
+        state
+            .apply(
+                |book| {
+                    book.asks.insert(
+                        Level::new(f64_to_scale9(50001.0), f64_to_scale9(1.0)),
+                        false,
+                    );
+                },
+                43,
+                TS + 1,
+            )
+            .unwrap();
 
         let (bid, ask) = state.bbo().unwrap();
         assert_eq!(bid.price, f64_to_scale9(50000.0));
@@ -188,18 +207,41 @@ mod tests {
     fn apply_records_the_given_timestamp() {
         let state = BookState::new(book());
 
-        state.apply(
-            |book| {
-                book.bids
-                    .insert(Level::new(f64_to_scale9(50000.0), f64_to_scale9(1.0)), true);
-            },
-            43,
-            TS + 1000,
-        );
+        state
+            .apply(
+                |book| {
+                    book.bids
+                        .insert(Level::new(f64_to_scale9(50000.0), f64_to_scale9(1.0)), true);
+                },
+                43,
+                TS + 1000,
+            )
+            .unwrap();
 
         assert_eq!(state.sequence(), 43);
         assert_eq!(state.last_update_ns(), TS + 1000);
         assert_eq!(state.snapshot().ts, TS + 1000);
+    }
+
+    #[test]
+    fn apply_rejects_gaps_and_ignores_duplicates_under_the_lock() {
+        let state = BookState::new(book());
+        let touch = |book: &mut Book| {
+            book.bids
+                .insert(Level::new(f64_to_scale9(1.0), f64_to_scale9(1.0)), true);
+        };
+
+        assert!(matches!(
+            state.apply(touch, 44, TS),
+            Err(Error::SequenceGap {
+                expected: 43,
+                received: 44
+            })
+        ));
+        assert_eq!(state.apply(touch, 42, TS), Ok(false));
+        assert_eq!(state.snapshot().bids.count(), 0);
+        assert_eq!(state.apply(touch, 43, TS), Ok(true));
+        assert_eq!(state.sequence(), 43);
     }
 
     #[test]

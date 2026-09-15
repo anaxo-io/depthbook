@@ -89,14 +89,18 @@ fn bench_apply_delta(c: &mut Criterion) {
                 let delta_bids = generate_levels(update_size, 49995_000000000, true);
                 let delta_asks = generate_levels(update_size, 50005_000000000, false);
 
+                // Each iteration must carry the next sequence number, or the store
+                // short-circuits on the duplicate and nothing is measured.
+                let mut seq = 1;
                 b.iter(|| {
+                    seq += 1;
                     store
                         .apply_delta(
                             black_box("binance"),
                             black_box("BTC-USDT"),
                             black_box(&delta_bids),
                             black_box(&delta_asks),
-                            black_box(2),
+                            black_box(seq),
                             black_box(now_ns()),
                         )
                         .unwrap();
@@ -192,6 +196,7 @@ fn bench_write_with_concurrent_reads(c: &mut Criterion) {
         let delta_bids = generate_levels(5, 49995_000000000, true);
         let delta_asks = generate_levels(5, 50005_000000000, false);
 
+        let mut seq = 1;
         b.iter(|| {
             // Start 4 reader threads that will read during writes
             let readers_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -213,7 +218,8 @@ fn bench_write_with_concurrent_reads(c: &mut Criterion) {
                 .collect();
 
             // Perform 100 writes
-            for seq in 2..102 {
+            for _ in 0..100 {
+                seq += 1;
                 store
                     .apply_delta(
                         "binance",
@@ -251,8 +257,10 @@ fn bench_sustained_throughput(c: &mut Criterion) {
         let delta_bids = generate_levels(2, 49998_000000000, true);
         let delta_asks = generate_levels(2, 50002_000000000, false);
 
+        let mut seq = 1;
         b.iter(|| {
-            for seq in 2..100_002 {
+            for _ in 0..100_000 {
+                seq += 1;
                 store
                     .apply_delta(
                         "binance",

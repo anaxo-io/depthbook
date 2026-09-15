@@ -17,9 +17,9 @@
 //! assert_eq!(price.checked_mul(qty).unwrap(), f64_to_scale9(246.913578024));
 //! ```
 
+use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::num::ParseFloatError;
 use std::ops::{Add, Neg, Sub};
 
 /// Number of implied decimal places in a [`Scale9`].
@@ -240,18 +240,57 @@ pub fn scale9_to_f64(value: Scale9) -> f64 {
     value.to_f64()
 }
 
-/// Parse a decimal string into [`Scale9`].
+/// Parse a decimal string into [`Scale9`] exactly.
 ///
-/// Exchange feeds quote prices as strings; this is the conversion for that.
+/// Exchange feeds quote prices as strings; this is the conversion for that. The string
+/// is parsed digit by digit, never through `f64`, so all nine decimal places survive.
+/// Accepts an optional sign, digits, and an optional fraction of at most nine digits.
+/// Exponents, `NaN`, `inf`, whitespace and more than nine decimals are rejected with
+/// [`Error::InvalidData`], as is any value outside the `i64` range.
 ///
 /// ```
-/// use orderbook::str_to_scale9;
+/// use orderbook::{str_to_scale9, Scale9};
 ///
 /// assert_eq!(str_to_scale9("123.456789").unwrap().raw(), 123_456_789_000);
+/// assert_eq!(str_to_scale9("123456789.123456789").unwrap().raw(), 123_456_789_123_456_789);
+/// assert_eq!(str_to_scale9("-0.5").unwrap(), Scale9::from_raw(-500_000_000));
 /// assert!(str_to_scale9("not a number").is_err());
+/// assert!(str_to_scale9("NaN").is_err());
 /// ```
-pub fn str_to_scale9(s: &str) -> Result<Scale9, ParseFloatError> {
-    Ok(Scale9::from_f64(s.parse::<f64>()?))
+pub fn str_to_scale9(s: &str) -> Result<Scale9> {
+    let invalid = || Error::InvalidData(format!("not a decimal: {s:?}"));
+
+    let (negative, body) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let (int_part, frac_part) = body.split_once('.').unwrap_or((body, ""));
+    if int_part.is_empty() && frac_part.is_empty() || frac_part.len() > SCALE as usize {
+        return Err(invalid());
+    }
+    if !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(invalid());
+    }
+
+    let mut raw: i64 = 0;
+    for b in int_part.bytes() {
+        raw = raw
+            .checked_mul(10)
+            .and_then(|r| r.checked_add(i64::from(b - b'0')))
+            .ok_or_else(invalid)?;
+    }
+    raw = raw.checked_mul(SCALE9).ok_or_else(invalid)?;
+    let mut frac: i64 = 0;
+    for b in frac_part.bytes() {
+        frac = frac * 10 + i64::from(b - b'0');
+    }
+    frac *= 10_i64.pow(SCALE - frac_part.len() as u32);
+    raw = raw.checked_add(frac).ok_or_else(invalid)?;
+
+    Ok(Scale9(if negative { -raw } else { raw }))
 }
 
 /// Format a [`Scale9`] with a fixed number of decimal places, rounding half away from zero.
@@ -266,21 +305,27 @@ pub fn str_to_scale9(s: &str) -> Result<Scale9, ParseFloatError> {
 /// assert_eq!(scale9_to_string(price, 6), "123.456789");
 /// assert_eq!(scale9_to_string(price, 2), "123.46");
 /// assert_eq!(scale9_to_string(price, 0), "123");
+/// assert_eq!(scale9_to_string(f64_to_scale9(-0.5), 1), "-0.5");
+/// assert_eq!(scale9_to_string(f64_to_scale9(0.999), 2), "1.00");
 /// ```
 pub fn scale9_to_string(value: Scale9, decimals: usize) -> String {
     let decimals = decimals.min(SCALE as usize);
-    let raw = value.raw();
+    let divisor = 10_u64.pow(SCALE - decimals as u32);
+    // Round the magnitude as a whole so a carry (0.999 -> 1.00) propagates naturally.
+    let rounded = (value.0.unsigned_abs() + divisor / 2) / divisor;
+    let unit = 10_u64.pow(decimals as u32);
+    let sign = if value.0 < 0 && rounded != 0 { "-" } else { "" };
+    let integer = rounded / unit;
 
     if decimals == 0 {
-        return format!("{}", raw / SCALE9);
+        format!("{sign}{integer}")
+    } else {
+        format!(
+            "{sign}{integer}.{:0width$}",
+            rounded % unit,
+            width = decimals
+        )
     }
-
-    let integer = raw / SCALE9;
-    let fraction = (raw % SCALE9).abs();
-    let divisor = 10_i64.pow(SCALE - decimals as u32);
-    let rounded = (fraction + divisor / 2) / divisor;
-
-    format!("{integer}.{rounded:0width$}", width = decimals)
 }
 
 #[cfg(test)]
@@ -309,6 +354,33 @@ mod tests {
         assert_eq!(str_to_scale9("0.000000001").unwrap(), Scale9::from_raw(1));
         assert_eq!(str_to_scale9("1.0").unwrap(), Scale9::ONE);
         assert!(str_to_scale9("invalid").is_err());
+        assert_eq!(
+            str_to_scale9("9223372036.854775807").unwrap(),
+            Scale9::from_raw(i64::MAX)
+        );
+        assert_eq!(
+            str_to_scale9("-1.5").unwrap(),
+            Scale9::from_raw(-1_500_000_000)
+        );
+        assert_eq!(str_to_scale9(".5").unwrap(), Scale9::from_raw(500_000_000));
+        assert_eq!(
+            str_to_scale9("5.").unwrap(),
+            Scale9::from_raw(5_000_000_000)
+        );
+        for bad in [
+            "",
+            "-",
+            ".",
+            "1e5",
+            "NaN",
+            "inf",
+            " 1",
+            "1.0000000001",
+            "9223372036.854775808",
+            "1.2.3",
+        ] {
+            assert!(str_to_scale9(bad).is_err(), "{bad:?} should be rejected");
+        }
     }
 
     #[test]
@@ -333,6 +405,18 @@ mod tests {
         assert_eq!(scale9_to_string(price, 2), "123.46");
         assert_eq!(scale9_to_string(Scale9::ONE, 0), "1");
         assert_eq!(scale9_to_string(Scale9::from_f64(1.5), 1), "1.5");
+        assert_eq!(scale9_to_string(Scale9::from_raw(-500_000_000), 1), "-0.5");
+        assert_eq!(
+            scale9_to_string(Scale9::from_raw(-1_500_000_000), 2),
+            "-1.50"
+        );
+        assert_eq!(scale9_to_string(Scale9::from_raw(999_999_999), 2), "1.00");
+        assert_eq!(scale9_to_string(Scale9::from_raw(999_999_999), 0), "1");
+        assert_eq!(scale9_to_string(Scale9::from_raw(-4), 2), "0.00");
+        assert_eq!(
+            scale9_to_string(Scale9::from_raw(i64::MIN), 9),
+            "-9223372036.854775808"
+        );
     }
 
     #[test]

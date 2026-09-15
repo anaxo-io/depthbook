@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The sequence check in `apply_delta` now runs under the book's write lock, so two writers
+  can no longer both apply the same sequence number. `BookState::apply` returns
+  `Result<bool>` accordingly.
+- `str_to_scale9` parses exactly instead of through `f64`: all nine decimals survive,
+  and `NaN`, `inf`, exponents and over-long fractions are rejected. **Breaking:** it now
+  returns `Error::InvalidData` rather than `ParseFloatError`.
+- `scale9_to_string` keeps the sign of values between -1 and 0 and carries rounding
+  (`0.999` at two decimals is `1.00`, not `0.100`).
+- Deserialising a `Side` rejects unsorted or duplicate prices, non-positive quantities,
+  and a `count` that does not match `levels`.
+- `mid_price`, `spread` and `depth_within_bps` no longer overflow on extreme prices.
+- The `apply_delta`, sustained-throughput and concurrent-write benchmarks reused one
+  sequence number, so they measured the duplicate short-circuit rather than an update.
+  README figures are re-measured.
+
 ## [0.2.0] - 2026-09-14
 
 ### Changed
