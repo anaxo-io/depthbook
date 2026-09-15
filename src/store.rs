@@ -5,8 +5,61 @@ use crate::error::{Error, Result};
 use crate::intern::InternedString;
 use crate::types::{Book, Level};
 use dashmap::DashMap;
+use std::borrow::Borrow;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// Owned map key: venue and instrument.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Key(String, String);
+
+/// Lets the map be probed with two `&str` without building a `Key`, which would cost two
+/// allocations on every delta. `Key` and `(&str, &str)` hash and compare identically
+/// through this trait, so `DashMap::get(&(venue, inst) as &dyn KeyLike)` finds the entry.
+trait KeyLike {
+    fn venue(&self) -> &str;
+    fn inst(&self) -> &str;
+}
+
+impl KeyLike for Key {
+    fn venue(&self) -> &str {
+        &self.0
+    }
+    fn inst(&self) -> &str {
+        &self.1
+    }
+}
+
+impl KeyLike for (&str, &str) {
+    fn venue(&self) -> &str {
+        self.0
+    }
+    fn inst(&self) -> &str {
+        self.1
+    }
+}
+
+impl Hash for dyn KeyLike + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.venue().hash(state);
+        self.inst().hash(state);
+    }
+}
+
+impl PartialEq for dyn KeyLike + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.venue() == other.venue() && self.inst() == other.inst()
+    }
+}
+
+impl Eq for dyn KeyLike + '_ {}
+
+impl<'a> Borrow<dyn KeyLike + 'a> for Key {
+    fn borrow(&self) -> &(dyn KeyLike + 'a) {
+        self
+    }
+}
 
 /// Counters describing what a [`BookStore`] has seen since it was created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +105,7 @@ pub struct Stats {
 /// ```
 #[derive(Debug, Default)]
 pub struct BookStore {
-    books: DashMap<(String, String), Arc<BookState>>,
+    books: DashMap<Key, Arc<BookState>>,
     sequence_gaps: AtomicU64,
     snapshots_applied: AtomicU64,
     deltas_applied: AtomicU64,
@@ -87,12 +140,14 @@ impl BookStore {
             seq,
         );
 
-        for level in bids {
+        // Feeds send snapshots best-first. Levels are stored best-last, so inserting in
+        // reverse appends each one instead of shifting the whole array.
+        for level in bids.iter().rev() {
             if !level.is_empty() {
                 book.bids.insert(*level, true);
             }
         }
-        for level in asks {
+        for level in asks.iter().rev() {
             if !level.is_empty() {
                 book.asks.insert(*level, false);
             }
@@ -127,11 +182,13 @@ impl BookStore {
         seq: u64,
         ts: u64,
     ) -> Result<()> {
-        let key = (venue.to_string(), inst.to_string());
-        let state = self.books.get(&key).ok_or_else(|| Error::NotFound {
-            venue: venue.to_string(),
-            inst: inst.to_string(),
-        })?;
+        let state = self
+            .books
+            .get(&(venue, inst) as &dyn KeyLike)
+            .ok_or_else(|| Error::NotFound {
+                venue: venue.to_string(),
+                inst: inst.to_string(),
+            })?;
 
         let applied = state
             .apply(
@@ -170,8 +227,7 @@ impl BookStore {
     ///
     /// `depth` of `0` returns every level. Returns `None` if the book does not exist.
     pub fn snapshot(&self, venue: &str, inst: &str, depth: usize) -> Option<Book> {
-        let key = (venue.to_string(), inst.to_string());
-        let state = self.books.get(&key)?;
+        let state = self.books.get(&(venue, inst) as &dyn KeyLike)?;
 
         let mut book = state.snapshot();
         if depth > 0 {
@@ -186,16 +242,14 @@ impl BookStore {
     /// Returns `None` if the book does not exist or either side is empty. This is cheaper
     /// than [`BookStore::snapshot`], which copies the whole book.
     pub fn bbo(&self, venue: &str, inst: &str) -> Option<(Level, Level)> {
-        let key = (venue.to_string(), inst.to_string());
-        self.books.get(&key)?.bbo()
+        self.books.get(&(venue, inst) as &dyn KeyLike)?.bbo()
     }
 
     /// Report whether a book is older than `max_age_ms`.
     ///
     /// A book that does not exist counts as stale.
     pub fn is_stale(&self, venue: &str, inst: &str, max_age_ms: u64) -> bool {
-        let key = (venue.to_string(), inst.to_string());
-        match self.books.get(&key) {
+        match self.books.get(&(venue, inst) as &dyn KeyLike) {
             Some(state) => state.is_stale(max_age_ms),
             None => true,
         }
@@ -212,9 +266,8 @@ impl BookStore {
     }
 
     fn get_or_create(&self, venue: &str, inst: &str, seq: u64, ts: u64) -> Arc<BookState> {
-        let key = (venue.to_string(), inst.to_string());
         self.books
-            .entry(key)
+            .entry(Key(venue.to_string(), inst.to_string()))
             .or_insert_with(|| {
                 let book = Book::new(
                     InternedString::new(venue),

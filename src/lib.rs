@@ -6,8 +6,9 @@
 //!
 //! # Design
 //!
-//! - **Fixed-capacity sides.** Each side of a book is a sorted [`Level`] array, so
-//!   applying an update is a binary search plus a memmove with no allocation.
+//! - **Fixed-capacity sides.** Each side of a book is a sorted [`Level`] array with the
+//!   best level at the end, so applying an update is a short scan plus a small memmove
+//!   with no allocation.
 //! - **Integer prices.** Prices and quantities are [`Scale9`] fixed-point values rather
 //!   than `f64` or bare `i64`, so arithmetic is exact and an unscaled number cannot be
 //!   passed where a scaled one belongs.

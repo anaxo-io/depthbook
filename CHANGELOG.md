@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
+### Changed
+
+- **Breaking.** `Side::levels` returns a best-first iterator instead of a slice. Levels
+  are now stored best-last so a top-of-book insert moves almost nothing, and lookup scans
+  the best 16 levels before binary-searching the rest. On a top-heavy update stream at
+  200 levels the side is about four times faster; deep inserts are unchanged within noise.
+  Measured in `benches/side_layout.rs` and written up in the README.
+- `BookStore` looks up books without allocating: the two `String` copies of venue and
+  instrument on every `apply_delta`, `bbo`, `snapshot` and `is_stale` call are gone.
+
 ## [0.3.0] - 2026-09-15
 
 ### Fixed
@@ -100,7 +112,8 @@ Initial release.
   intentional for top-of-book use but is not reported to the caller. Tracked in
   [#3](https://github.com/anaxo-io/orderbook-rs/issues/3).
 
-[Unreleased]: https://github.com/anaxo-io/orderbook-rs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/anaxo-io/orderbook-rs/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/anaxo-io/orderbook-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/anaxo-io/orderbook-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/anaxo-io/orderbook-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/anaxo-io/orderbook-rs/releases/tag/v0.1.0

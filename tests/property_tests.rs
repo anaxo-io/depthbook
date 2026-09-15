@@ -25,7 +25,7 @@ proptest! {
             bids.insert(Level::new(s9(price), ONE), true);
         }
 
-        let levels = bids.levels();
+        let levels: Vec<Level> = bids.levels().copied().collect();
         for i in 1..levels.len() {
             prop_assert!(
                 levels[i - 1].price >= levels[i].price,
@@ -47,7 +47,7 @@ proptest! {
             asks.insert(Level::new(s9(price), ONE), false);
         }
 
-        let levels = asks.levels();
+        let levels: Vec<Level> = asks.levels().copied().collect();
         for i in 1..levels.len() {
             prop_assert!(
                 levels[i - 1].price <= levels[i].price,
@@ -197,7 +197,7 @@ proptest! {
             bids.insert(Level::new(s9(price), ONE), true);
         }
 
-        let levels = bids.levels();
+        let levels: Vec<Level> = bids.levels().copied().collect();
         for i in 0..levels.len() {
             for j in (i + 1)..levels.len() {
                 prop_assert_ne!(

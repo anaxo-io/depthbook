@@ -113,14 +113,22 @@ fn test_delta_removes_level() {
     let has_removed_price = result
         .bids
         .levels()
-        .iter()
         .any(|l| scale9_to_f64(l.price) == 49999.0);
     assert!(!has_removed_price, "Level at 49999.0 should be removed");
 
     // Verify remaining levels
-    assert_eq!(scale9_to_f64(result.bids.levels()[0].price), 50000.0);
-    assert_eq!(scale9_to_f64(result.bids.levels()[1].price), 49998.0);
-    assert_eq!(scale9_to_f64(result.bids.levels()[2].price), 49997.0);
+    assert_eq!(
+        scale9_to_f64(result.bids.levels().next().unwrap().price),
+        50000.0
+    );
+    assert_eq!(
+        scale9_to_f64(result.bids.levels().nth(1).unwrap().price),
+        49998.0
+    );
+    assert_eq!(
+        scale9_to_f64(result.bids.levels().nth(2).unwrap().price),
+        49997.0
+    );
 }
 
 #[test]
@@ -194,8 +202,8 @@ fn test_sorted_invariants() {
     let snapshot = store.snapshot("binance", "BTC-USDT", 200).unwrap();
 
     for i in 1..snapshot.bids.count() {
-        let prev_price = scale9_to_f64(snapshot.bids.levels()[i - 1].price);
-        let curr_price = scale9_to_f64(snapshot.bids.levels()[i].price);
+        let prev_price = scale9_to_f64(snapshot.bids.levels().nth(i - 1).unwrap().price);
+        let curr_price = scale9_to_f64(snapshot.bids.levels().nth(i).unwrap().price);
         assert!(
             prev_price > curr_price,
             "Bids not descending: {} <= {}",
@@ -206,8 +214,8 @@ fn test_sorted_invariants() {
 
     // Verify asks are sorted ascending
     for i in 1..snapshot.asks.count() {
-        let prev_price = scale9_to_f64(snapshot.asks.levels()[i - 1].price);
-        let curr_price = scale9_to_f64(snapshot.asks.levels()[i].price);
+        let prev_price = scale9_to_f64(snapshot.asks.levels().nth(i - 1).unwrap().price);
+        let curr_price = scale9_to_f64(snapshot.asks.levels().nth(i).unwrap().price);
         assert!(
             prev_price < curr_price,
             "Asks not ascending: {} >= {}",
@@ -282,7 +290,6 @@ fn test_duplicate_sequence_ignored() {
     let has_49998 = snapshot
         .bids
         .levels()
-        .iter()
         .any(|l| scale9_to_f64(l.price) == 49998.0);
     assert!(!has_49998);
 }
@@ -518,7 +525,7 @@ fn test_depth_limiting() {
         50001.0
     );
     assert_eq!(
-        scale9_to_f64(snapshot_10.bids.levels()[9].price),
+        scale9_to_f64(snapshot_10.bids.levels().nth(9).unwrap().price),
         50000.0 - 9.0
     );
 

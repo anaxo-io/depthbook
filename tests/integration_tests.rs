@@ -202,7 +202,7 @@ fn test_order_book_side_sorting() {
     }
 
     // Verify descending order for bids
-    let levels = bids.levels();
+    let levels: Vec<Level> = bids.levels().copied().collect();
     for i in 1..levels.len() {
         assert!(
             levels[i - 1].price >= levels[i].price,
@@ -219,7 +219,7 @@ fn test_order_book_side_sorting() {
     }
 
     // Verify ascending order for asks
-    let levels = asks.levels();
+    let levels: Vec<Level> = asks.levels().copied().collect();
     for i in 1..levels.len() {
         assert!(
             levels[i - 1].price <= levels[i].price,

@@ -7,6 +7,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Maximum number of levels held on one side of a book.
 pub const MAX_LEVELS: usize = 200;
 
+/// How many levels from the best are scanned linearly before falling back to binary search.
+const SCAN_LEVELS: usize = 16;
+
 /// A single price level: a price and the quantity resting at it.
 ///
 /// Both fields are [`Scale9`] fixed-point values, so there is no floating-point error and
@@ -45,8 +48,10 @@ impl Level {
 
 /// One side of a book: a fixed-capacity array of levels kept in price order.
 ///
-/// Bids are ordered highest price first, asks lowest first, so the best level is always
-/// at index 0. The array is pre-allocated, so applying an update never allocates.
+/// Levels are stored worst-first, so the best level is at the end and an update near the
+/// top of the book, where nearly all updates land, moves almost nothing. [`Side::levels`]
+/// still yields best-first. The array is pre-allocated, so applying an update never
+/// allocates.
 ///
 /// Capacity is [`MAX_LEVELS`]. Inserting into a full side drops the worst level.
 #[repr(C)]
@@ -100,8 +105,8 @@ impl Side {
     /// assert_eq!(side.levels().len(), 1);
     /// ```
     #[inline]
-    pub fn levels(&self) -> &[Level] {
-        &self.levels[..self.count]
+    pub fn levels(&self) -> impl DoubleEndedIterator<Item = &Level> + ExactSizeIterator {
+        self.levels[..self.count].iter().rev()
     }
 
     /// Insert a level, or update the quantity if that price is already present.
@@ -142,18 +147,19 @@ impl Side {
             return false;
         }
 
-        if self.count >= MAX_LEVELS {
-            if insert_pos >= MAX_LEVELS {
+        if self.count == MAX_LEVELS {
+            // The worst level sits at index 0. Drop it to make room, unless the new level
+            // would itself be the worst.
+            if insert_pos == 0 {
                 return false;
             }
-            self.count = MAX_LEVELS - 1;
+            self.levels.copy_within(1..insert_pos, 0);
+            self.levels[insert_pos - 1] = level;
+            return true;
         }
 
-        if insert_pos < self.count {
-            self.levels
-                .copy_within(insert_pos..self.count, insert_pos + 1);
-        }
-
+        self.levels
+            .copy_within(insert_pos..self.count, insert_pos + 1);
         self.levels[insert_pos] = level;
         self.count += 1;
 
@@ -221,7 +227,7 @@ impl Side {
     #[inline]
     pub fn best(&self) -> Option<Level> {
         if self.count > 0 {
-            Some(self.levels[0])
+            Some(self.levels[self.count - 1])
         } else {
             None
         }
@@ -247,7 +253,7 @@ impl Side {
             return Scale9::ZERO;
         }
 
-        let best = self.levels[0].price.raw();
+        let best = self.levels[self.count - 1].price.raw();
         if best == 0 {
             return Scale9::ZERO;
         }
@@ -284,8 +290,8 @@ impl Side {
 
     /// Keep at most `n` levels, dropping the worst ones.
     ///
-    /// Because a side is sorted best-first, this keeps the top of the book. Truncating to
-    /// more levels than are present does nothing.
+    /// This keeps the top of the book. Truncating to more levels than are present does
+    /// nothing.
     ///
     /// # Examples
     /// ```
@@ -300,21 +306,38 @@ impl Side {
     /// assert_eq!(bids.best().unwrap().price, f64_to_scale9(50_000.0));
     /// ```
     pub fn truncate(&mut self, n: usize) {
-        self.count = self.count.min(n);
+        if n < self.count {
+            self.levels.copy_within(self.count - n..self.count, 0);
+            self.count = n;
+        }
     }
 
-    /// Binary search for where `price` belongs, respecting the side's sort order.
+    /// Where `price` belongs in storage order, worst at 0 and best at `count - 1`.
+    ///
+    /// The best [`SCAN_LEVELS`] are scanned linearly, since that is where nearly every
+    /// update lands and a short sequential scan beats a binary search there; anything
+    /// deeper falls back to a binary search. See `benches/side_layout.rs`.
     #[inline]
     fn find_insert_position(&self, price: Scale9, is_bid: bool) -> usize {
-        self.levels()
-            .binary_search_by(|level| {
-                if is_bid {
-                    level.price.cmp(&price).reverse()
-                } else {
-                    level.price.cmp(&price)
-                }
-            })
-            .unwrap_or_else(|pos| pos)
+        // Two monomorphised copies so the side comparison is not a branch inside the loop.
+        if is_bid {
+            self.position_by(|p| p < price)
+        } else {
+            self.position_by(|p| p > price)
+        }
+    }
+
+    /// `worse` reports whether a stored price is further from the top of the book than
+    /// the one being placed.
+    #[inline]
+    fn position_by(&self, worse: impl Fn(Scale9) -> bool) -> usize {
+        let active = &self.levels[..self.count];
+        let scan_from = self.count.saturating_sub(SCAN_LEVELS);
+        match active[scan_from..].iter().rposition(|l| worse(l.price)) {
+            Some(i) => scan_from + i + 1,
+            None if scan_from == 0 => 0,
+            None => active[..scan_from].partition_point(|l| worse(l.price)),
+        }
     }
 
     #[inline]
@@ -340,7 +363,13 @@ impl Serialize for Side {
     {
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("Side", 2)?;
-        state.serialize_field("levels", &self.levels())?;
+        struct BestFirst<'a>(&'a Side);
+        impl Serialize for BestFirst<'_> {
+            fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.collect_seq(self.0.levels())
+            }
+        }
+        state.serialize_field("levels", &BestFirst(self))?;
         state.serialize_field("count", &self.count)?;
         state.end()
     }
@@ -416,7 +445,9 @@ impl<'de> Deserialize<'de> for Side {
                 }
 
                 let mut side = Side::new();
-                side.levels[..count].copy_from_slice(&levels_vec);
+                for (slot, level) in side.levels[..count].iter_mut().zip(levels_vec.iter().rev()) {
+                    *slot = *level;
+                }
                 side.count = count;
 
                 Ok(side)
@@ -587,9 +618,9 @@ mod tests {
         ));
 
         assert_eq!(bids.count(), 3);
-        assert_eq!(bids.levels()[0].price, f64_to_scale9(50_001.0));
-        assert_eq!(bids.levels()[1].price, f64_to_scale9(50_000.0));
-        assert_eq!(bids.levels()[2].price, f64_to_scale9(49_999.0));
+        assert_eq!(bids.levels().next().unwrap().price, f64_to_scale9(50_001.0));
+        assert_eq!(bids.levels().nth(1).unwrap().price, f64_to_scale9(50_000.0));
+        assert_eq!(bids.levels().nth(2).unwrap().price, f64_to_scale9(49_999.0));
     }
 
     #[test]
@@ -610,9 +641,9 @@ mod tests {
         ));
 
         assert_eq!(asks.count(), 3);
-        assert_eq!(asks.levels()[0].price, f64_to_scale9(49_999.0));
-        assert_eq!(asks.levels()[1].price, f64_to_scale9(50_000.0));
-        assert_eq!(asks.levels()[2].price, f64_to_scale9(50_001.0));
+        assert_eq!(asks.levels().next().unwrap().price, f64_to_scale9(49_999.0));
+        assert_eq!(asks.levels().nth(1).unwrap().price, f64_to_scale9(50_000.0));
+        assert_eq!(asks.levels().nth(2).unwrap().price, f64_to_scale9(50_001.0));
     }
 
     #[test]
@@ -630,7 +661,7 @@ mod tests {
             true
         ));
         assert_eq!(bids.count(), 1);
-        assert_eq!(bids.levels()[0].qty, f64_to_scale9(2.0));
+        assert_eq!(bids.levels().next().unwrap().qty, f64_to_scale9(2.0));
     }
 
     #[test]
@@ -649,7 +680,7 @@ mod tests {
 
         assert!(bids.remove(f64_to_scale9(50_000.0), true));
         assert_eq!(bids.count(), 1);
-        assert_eq!(bids.levels()[0].price, f64_to_scale9(49_999.0));
+        assert_eq!(bids.levels().next().unwrap().price, f64_to_scale9(49_999.0));
 
         assert!(!bids.remove(f64_to_scale9(50_000.0), true));
     }
@@ -663,7 +694,7 @@ mod tests {
 
         bids.update(f64_to_scale9(50_000.0), f64_to_scale9(2.0), true);
         assert_eq!(bids.count(), 1);
-        assert_eq!(bids.levels()[0].qty, f64_to_scale9(2.0));
+        assert_eq!(bids.levels().next().unwrap().qty, f64_to_scale9(2.0));
 
         bids.update(f64_to_scale9(50_000.0), Scale9::ZERO, true);
         assert_eq!(bids.count(), 0);
@@ -827,7 +858,7 @@ mod tests {
             true,
         );
         assert_eq!(bids.count(), MAX_LEVELS);
-        assert_eq!(bids.levels()[0].price, f64_to_scale9(50_001.0));
+        assert_eq!(bids.levels().next().unwrap().price, f64_to_scale9(50_001.0));
     }
 
     #[test]

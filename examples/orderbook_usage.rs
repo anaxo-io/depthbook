@@ -102,7 +102,6 @@ fn main() {
     let updated_level = book
         .bids
         .levels()
-        .iter()
         .find(|l| scale9_to_f64(l.price) == 49999.50)
         .unwrap();
     println!(
