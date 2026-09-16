@@ -89,7 +89,7 @@ pub struct Stats {
 /// # Example
 ///
 /// ```
-/// use orderbook::{BookStore, Level, f64_to_scale9};
+/// use depthbook::{BookStore, Level, f64_to_scale9};
 ///
 /// let store = BookStore::new();
 /// store.apply_snapshot(
@@ -103,7 +103,7 @@ pub struct Stats {
 ///
 /// let book = store.snapshot("binance", "BTC-USDT", 10).unwrap();
 /// assert_eq!(book.spread(), Some(f64_to_scale9(10.0)));
-/// # Ok::<(), orderbook::Error>(())
+/// # Ok::<(), depthbook::Error>(())
 /// ```
 #[derive(Debug, Default)]
 pub struct BookStore {

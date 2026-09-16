@@ -1,8 +1,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use orderbook::decimal::f64_to_scale9;
-use orderbook::intern::InternedString;
-use orderbook::types::{Book, Level, Side};
-use orderbook::Scale9;
+use depthbook::decimal::f64_to_scale9;
+use depthbook::intern::InternedString;
+use depthbook::types::{Book, Level, Side};
+use depthbook::Scale9;
 use std::hint::black_box;
 
 /// Wrap a raw scaled integer, so the benchmarks can keep using integer arithmetic.

@@ -24,7 +24,7 @@ static INTERN_CACHE: once_cell::sync::Lazy<DashMap<Arc<str>, Arc<str>>> =
 ///
 /// # Examples
 /// ```
-/// use orderbook::intern::InternedString;
+/// use depthbook::intern::InternedString;
 ///
 /// let s1 = InternedString::new("binance");
 /// let s2 = InternedString::new("binance");
@@ -48,7 +48,7 @@ impl InternedString {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::intern::InternedString;
+    /// use depthbook::intern::InternedString;
     ///
     /// let venue = InternedString::new("binance");
     /// assert_eq!(venue.as_str(), "binance");
@@ -70,7 +70,7 @@ impl InternedString {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::intern::InternedString;
+    /// use depthbook::intern::InternedString;
     ///
     /// let s = InternedString::new("BTC-USDT");
     /// assert_eq!(s.as_str(), "BTC-USDT");

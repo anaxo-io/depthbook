@@ -6,7 +6,7 @@
 //! kept as integers and only converted at the edges.
 //!
 //! ```
-//! use orderbook::{f64_to_scale9, Scale9};
+//! use depthbook::{f64_to_scale9, Scale9};
 //!
 //! let price = f64_to_scale9(123.456789012);
 //! assert_eq!(price.raw(), 123_456_789_012);
@@ -38,7 +38,7 @@ pub const SCALE9: i64 = 1_000_000_000;
 /// `Ord` compares the underlying integers, so levels sort correctly by price.
 ///
 /// ```
-/// use orderbook::Scale9;
+/// use depthbook::Scale9;
 ///
 /// let a = Scale9::from_raw(50_000_000_000_000);
 /// let b = Scale9::from_f64(50_000.0);
@@ -63,7 +63,7 @@ impl Scale9 {
     /// [`Scale9::from_f64`] or [`str_to_scale9`] to convert an ordinary number.
     ///
     /// ```
-    /// use orderbook::Scale9;
+    /// use depthbook::Scale9;
     /// assert_eq!(Scale9::from_raw(1_500_000_000), Scale9::from_f64(1.5));
     /// ```
     #[inline]
@@ -122,7 +122,7 @@ impl Scale9 {
     /// price × quantity products do not overflow.
     ///
     /// ```
-    /// use orderbook::Scale9;
+    /// use depthbook::Scale9;
     /// let price = Scale9::from_f64(2.5);
     /// let qty = Scale9::from_f64(3.0);
     /// assert_eq!(price.checked_mul(qty), Some(Scale9::from_f64(7.5)));
@@ -136,7 +136,7 @@ impl Scale9 {
     /// Divide, returning `None` on overflow or division by zero.
     ///
     /// ```
-    /// use orderbook::Scale9;
+    /// use depthbook::Scale9;
     /// let total = Scale9::from_f64(10.0);
     /// assert_eq!(total.checked_div(Scale9::from_f64(4.0)), Some(Scale9::from_f64(2.5)));
     /// assert_eq!(total.checked_div(Scale9::ZERO), None);
@@ -218,7 +218,7 @@ impl fmt::Debug for Scale9 {
 /// Convert a floating-point number to [`Scale9`], rounding to the nearest 10⁻⁹.
 ///
 /// ```
-/// use orderbook::f64_to_scale9;
+/// use depthbook::f64_to_scale9;
 ///
 /// assert_eq!(f64_to_scale9(123.456789012).raw(), 123_456_789_012);
 /// assert_eq!(f64_to_scale9(1.0).raw(), 1_000_000_000);
@@ -231,7 +231,7 @@ pub fn f64_to_scale9(value: f64) -> Scale9 {
 /// Convert a [`Scale9`] to a floating-point number, which may lose precision.
 ///
 /// ```
-/// use orderbook::{f64_to_scale9, scale9_to_f64};
+/// use depthbook::{f64_to_scale9, scale9_to_f64};
 ///
 /// assert_eq!(scale9_to_f64(f64_to_scale9(1.5)), 1.5);
 /// ```
@@ -249,7 +249,7 @@ pub fn scale9_to_f64(value: Scale9) -> f64 {
 /// [`Error::InvalidData`], as is any value outside the `i64` range.
 ///
 /// ```
-/// use orderbook::{str_to_scale9, Scale9};
+/// use depthbook::{str_to_scale9, Scale9};
 ///
 /// assert_eq!(str_to_scale9("123.456789").unwrap().raw(), 123_456_789_000);
 /// assert_eq!(str_to_scale9("123456789.123456789").unwrap().raw(), 123_456_789_123_456_789);
@@ -302,7 +302,7 @@ pub fn str_to_scale9(s: &str) -> Result<Scale9> {
 /// [`Display`](std::fmt::Display).
 ///
 /// ```
-/// use orderbook::{f64_to_scale9, scale9_to_string};
+/// use depthbook::{f64_to_scale9, scale9_to_string};
 ///
 /// let price = f64_to_scale9(123.456789);
 /// assert_eq!(scale9_to_string(price, 6), "123.456789");

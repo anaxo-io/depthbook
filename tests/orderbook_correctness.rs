@@ -8,10 +8,10 @@
 //! - Staleness detection
 //! - Multi-instrument isolation
 
-use orderbook::decimal::{f64_to_scale9, scale9_to_f64};
-use orderbook::error::Error;
-use orderbook::store::BookStore;
-use orderbook::types::Level;
+use depthbook::decimal::{f64_to_scale9, scale9_to_f64};
+use depthbook::error::Error;
+use depthbook::store::BookStore;
+use depthbook::types::Level;
 
 // Helper to get current time in nanoseconds
 fn now_nanos() -> u64 {

@@ -1,6 +1,6 @@
-use orderbook::decimal::{f64_to_scale9, scale9_to_f64, scale9_to_string};
-use orderbook::intern::InternedString;
-use orderbook::types::{Book, Level};
+use depthbook::decimal::{f64_to_scale9, scale9_to_f64, scale9_to_string};
+use depthbook::intern::InternedString;
+use depthbook::types::{Book, Level};
 
 #[test]
 fn test_realistic_order_book_workflow() {
@@ -130,7 +130,7 @@ fn test_order_book_serialization() {
 
 #[test]
 fn test_depth_calculation() {
-    let mut bids = orderbook::types::Side::new();
+    let mut bids = depthbook::types::Side::new();
 
     // Add levels at different price points
     bids.insert(Level::new(f64_to_scale9(50000.0), f64_to_scale9(1.0)), true);
@@ -193,7 +193,7 @@ fn test_decimal_conversion_precision() {
 
 #[test]
 fn test_order_book_side_sorting() {
-    let mut bids = orderbook::types::Side::new();
+    let mut bids = depthbook::types::Side::new();
 
     // Insert in random order
     let prices = [49950.0, 50000.0, 49900.0, 49999.0, 49800.0];
@@ -213,7 +213,7 @@ fn test_order_book_side_sorting() {
     }
 
     // Test asks sorting (ascending)
-    let mut asks = orderbook::types::Side::new();
+    let mut asks = depthbook::types::Side::new();
     for price in prices {
         asks.insert(Level::new(f64_to_scale9(price), f64_to_scale9(1.0)), false);
     }
@@ -232,7 +232,7 @@ fn test_order_book_side_sorting() {
 
 #[test]
 fn test_capacity_limits() {
-    let mut bids = orderbook::types::Side::new();
+    let mut bids = depthbook::types::Side::new();
 
     // Try to add more than 200 levels
     for i in 0..250 {

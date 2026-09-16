@@ -28,7 +28,7 @@ impl Level {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Level};
+    /// use depthbook::{f64_to_scale9, Level};
     ///
     /// let level = Level::new(f64_to_scale9(50_000.5), f64_to_scale9(1.5));
     /// assert_eq!(level.price, f64_to_scale9(50_000.5));
@@ -66,7 +66,7 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::Side;
+    /// use depthbook::Side;
     ///
     /// let side = Side::new();
     /// assert_eq!(side.count(), 0);
@@ -98,7 +98,7 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Level, Side};
+    /// use depthbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut side = Side::new();
     /// side.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), false);
@@ -119,7 +119,7 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Level, Side};
+    /// use depthbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
     /// let level = Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0));
@@ -170,7 +170,7 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Level, Side};
+    /// use depthbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
     /// bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
@@ -194,7 +194,7 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Side};
+    /// use depthbook::{f64_to_scale9, Side};
     ///
     /// let mut bids = Side::new();
     /// bids.update(f64_to_scale9(50_000.0), f64_to_scale9(1.0), true);
@@ -214,7 +214,7 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Level, Side};
+    /// use depthbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
     /// assert!(bids.best().is_none());
@@ -239,7 +239,7 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Level, Side};
+    /// use depthbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
     /// bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
@@ -295,7 +295,7 @@ impl Side {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Level, Side};
+    /// use depthbook::{f64_to_scale9, Level, Side};
     ///
     /// let mut bids = Side::new();
     /// bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
@@ -529,7 +529,7 @@ impl Book {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{Book, InternedString};
+    /// use depthbook::{Book, InternedString};
     ///
     /// let book = Book::new(
     ///     InternedString::new("binance"),
@@ -558,7 +558,7 @@ impl Book {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Book, InternedString, Level};
+    /// use depthbook::{f64_to_scale9, Book, InternedString, Level};
     ///
     /// let mut book = Book::new(
     ///     InternedString::new("binance"),
@@ -587,7 +587,7 @@ impl Book {
     ///
     /// # Examples
     /// ```
-    /// use orderbook::{f64_to_scale9, Book, InternedString, Level};
+    /// use depthbook::{f64_to_scale9, Book, InternedString, Level};
     ///
     /// let mut book = Book::new(
     ///     InternedString::new("binance"),

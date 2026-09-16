@@ -5,7 +5,7 @@
 //! and linear-search slides for the motivation.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use orderbook::{Level, Scale9, MAX_LEVELS};
+use depthbook::{Level, Scale9, MAX_LEVELS};
 use std::collections::BTreeMap;
 use std::hint::black_box;
 

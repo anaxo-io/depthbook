@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking.** The crate is renamed from `orderbook` to `depthbook`, because the
+  crates.io name `orderbook` belongs to an unrelated project. Update imports from
+  `use orderbook::..` to `use depthbook::..`. The GitHub repository moved from
+  `anaxo-io/orderbook-rs` to `anaxo-io/depthbook`; GitHub redirects the old URL.
+
 ## [0.5.0] - 2026-09-15
 
 ### Added
@@ -93,13 +100,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Update `criterion` from 0.5 to 0.8. Benchmarks now use `std::hint::black_box`;
   `criterion::black_box` is deprecated in 0.8 and the crate builds benchmarks with
-  warnings denied ([#6](https://github.com/anaxo-io/orderbook-rs/pull/6)).
+  warnings denied ([#6](https://github.com/anaxo-io/depthbook/pull/6)).
 
 - Update `serial_test` from 3.1 to 4.0
-  ([#7](https://github.com/anaxo-io/orderbook-rs/pull/7)).
+  ([#7](https://github.com/anaxo-io/depthbook/pull/7)).
 
 - Update `actions/checkout` from 4 to 7 in CI
-  ([#5](https://github.com/anaxo-io/orderbook-rs/pull/5)).
+  ([#5](https://github.com/anaxo-io/depthbook/pull/5)).
 
 ### Added
 
@@ -113,7 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job. That tag names the Rust toolchain version rather than the action version, so a bump
   asked CI to install a Rust release that does not exist. The reference now changes only
   when the MSRV itself changes, alongside `rust-version` in `Cargo.toml`
-  ([#4](https://github.com/anaxo-io/orderbook-rs/pull/4)).
+  ([#4](https://github.com/anaxo-io/depthbook/pull/4)).
 
 ## [0.1.0] - 2026-09-14
 
@@ -136,17 +143,17 @@ Initial release.
 
 - `Book::mid_price` and `Book::spread` do not check for a crossed book (best bid above
   best ask); a crossed book yields a negative spread rather than an error. Tracked in
-  [#1](https://github.com/anaxo-io/orderbook-rs/issues/1).
+  [#1](https://github.com/anaxo-io/depthbook/issues/1).
 - `BookStore::snapshot` clones the full book before truncating to the requested depth, so
   a shallow read costs the same as a deep one. Tracked in
-  [#2](https://github.com/anaxo-io/orderbook-rs/issues/2).
+  [#2](https://github.com/anaxo-io/depthbook/issues/2).
 - `Side::insert` silently drops the worst level when a side is at capacity. This is
   intentional for top-of-book use but is not reported to the caller. Tracked in
-  [#3](https://github.com/anaxo-io/orderbook-rs/issues/3).
+  [#3](https://github.com/anaxo-io/depthbook/issues/3).
 
-[Unreleased]: https://github.com/anaxo-io/orderbook-rs/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/anaxo-io/orderbook-rs/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/anaxo-io/orderbook-rs/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/anaxo-io/orderbook-rs/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/anaxo-io/orderbook-rs/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/anaxo-io/orderbook-rs/releases/tag/v0.1.0
+[Unreleased]: https://github.com/anaxo-io/depthbook/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/anaxo-io/depthbook/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/anaxo-io/depthbook/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/anaxo-io/depthbook/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/anaxo-io/depthbook/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/anaxo-io/depthbook/releases/tag/v0.1.0

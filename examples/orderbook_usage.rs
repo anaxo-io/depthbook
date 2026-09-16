@@ -1,5 +1,5 @@
-use orderbook::decimal::{f64_to_scale9, scale9_to_f64, scale9_to_string};
-use orderbook::intern::InternedString;
+use depthbook::decimal::{f64_to_scale9, scale9_to_f64, scale9_to_string};
+use depthbook::intern::InternedString;
 /// Basic usage example for the orderbook crate.
 ///
 /// This example demonstrates how to:
@@ -7,7 +7,7 @@ use orderbook::intern::InternedString;
 /// - Add levels to both sides
 /// - Query the order book
 /// - Serialize to JSON
-use orderbook::types::{Book, Level};
+use depthbook::types::{Book, Level};
 
 fn main() {
     println!("=== Order Book Store - Basic Usage Example ===\n");

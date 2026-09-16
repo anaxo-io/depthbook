@@ -1,6 +1,6 @@
-# orderbook
+# depthbook
 
-[![CI](https://github.com/anaxo-io/orderbook-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/anaxo-io/orderbook-rs/actions/workflows/ci.yml)
+[![CI](https://github.com/anaxo-io/depthbook/actions/workflows/ci.yml/badge.svg)](https://github.com/anaxo-io/depthbook/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/MSRV-1.85-blue.svg)](https://blog.rust-lang.org/)
 
@@ -24,13 +24,13 @@ is the better fit; this is a data structure you can drop into whatever you alrea
 
 ```toml
 [dependencies]
-orderbook = { git = "https://github.com/anaxo-io/orderbook-rs", tag = "v0.5.0" }
+depthbook = { git = "https://github.com/anaxo-io/depthbook", tag = "v0.6.0" }
 ```
 
 ```rust
-use orderbook::{f64_to_scale9, BookStore, Level};
+use depthbook::{f64_to_scale9, BookStore, Level};
 
-fn main() -> Result<(), orderbook::Error> {
+fn main() -> Result<(), depthbook::Error> {
     let store = BookStore::new();
 
     // A snapshot establishes the book.
@@ -171,7 +171,7 @@ Three things worth reading off that table:
 - **`snapshot` is flat in `depth`, and that is a wart, not a feature.** Asking for 5 levels
   costs the same ~470 ns as asking for 100, because the book is cloned in full and then
   truncated. If you only need top of book, `bbo` is about 7× cheaper. This is tracked in
-  [#2](https://github.com/anaxo-io/orderbook-rs/issues/2).
+  [#2](https://github.com/anaxo-io/depthbook/issues/2).
 - **`Scale9` costs nothing.** Wrapping prices in a distinct type rather than using a bare
   `i64` left every benchmark within noise of the untyped version, which is what
   `#[repr(transparent)]` and inlined accessors should give you.

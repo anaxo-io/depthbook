@@ -5,8 +5,8 @@ Thanks for taking the time to contribute.
 ## Development setup
 
 ```bash
-git clone https://github.com/anaxo-io/orderbook-rs
-cd orderbook-rs
+git clone https://github.com/anaxo-io/depthbook
+cd depthbook
 cargo test --all-features
 ```
 

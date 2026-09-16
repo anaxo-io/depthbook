@@ -3,8 +3,8 @@
 //! Prices are generated as raw scaled integers and wrapped with [`s9`], so the
 //! strategies stay simple while the book still sees `Scale9` values.
 
-use orderbook::types::{Level, Side};
-use orderbook::{Scale9, MAX_LEVELS};
+use depthbook::types::{Level, Side};
+use depthbook::{Scale9, MAX_LEVELS};
 use proptest::prelude::*;
 
 /// Wrap a raw scaled integer as a price or quantity.

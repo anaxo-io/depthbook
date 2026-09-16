@@ -1,6 +1,6 @@
-use orderbook::decimal::f64_to_scale9;
-use orderbook::store::BookStore;
-use orderbook::types::Level;
+use depthbook::decimal::f64_to_scale9;
+use depthbook::store::BookStore;
+use depthbook::types::Level;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;

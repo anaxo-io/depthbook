@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```
-//! use orderbook::{f64_to_scale9, BookStore, Level};
+//! use depthbook::{f64_to_scale9, BookStore, Level};
 //!
 //! let store = BookStore::new();
 //!
@@ -38,7 +38,7 @@
 //! let gap = store.apply_delta("binance", "BTC-USDT", &[], &[], 7, 1_700_000_000_000_000_001);
 //! assert!(gap.is_err());
 //! assert_eq!(store.stats().sequence_gaps, 1);
-//! # Ok::<(), orderbook::Error>(())
+//! # Ok::<(), depthbook::Error>(())
 //! ```
 //!
 //! # Scope
