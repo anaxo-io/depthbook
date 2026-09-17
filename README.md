@@ -136,52 +136,71 @@ cargo run --example store_usage
 ## Performance
 
 ```bash
-cargo bench
+DEPTHBOOK_PIN=2 cargo bench --bench book_ops
+DEPTHBOOK_PIN=2 cargo bench --bench store_ops
 ```
 
-Measured on an AMD Ryzen 7 1800X (8 cores / 16 threads) with Rust 1.98.1. The machine was
-otherwise idle but CPU frequency scaling was left on, so expect a few percent of drift
-between runs. Criterion medians; your numbers will differ. These come from [`benches/`](benches/)
-and can be reproduced with the command above.
+Measured on a Scaleway Elastic Metal EM-A116X: Intel Xeon E3-1231 v3 (Haswell, 4 cores /
+8 threads, 8 MiB L3 shared by the whole package), Ubuntu 26.04 LTS, kernel
+7.0.0-15-generic, rustc 1.98.1. The box rents by the hour for about EUR 0.08, so these are
+reproducible for the price of a coffee.
+
+The machine was booted with `isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7` and the
+`performance` governor, which leaves the operating system on core 0 and cores 2 to 7 with
+nothing scheduled on them. `DEPTHBOOK_PIN=2` then puts the benchmark on one of those
+isolated cores alone. That combination is what makes the numbers stable; pinning on a
+shared machine does not, as [`CONTRIBUTING.md`](CONTRIBUTING.md#benchmarks) shows.
+Criterion defaults, 100 samples per benchmark. Across all 98 benchmarks the median
+confidence interval was 0.20 % of the median and the worst was 6.3 %; criterion's outlier
+rate had a median of 1 % and a maximum of 31 %, the high rates being the sub-nanosecond
+benchmarks where timer quantisation alone marks samples as outlying.
 
 | Operation | Median |
 | --- | --- |
-| `apply_delta`, 1 level per side | 131 ns |
-| `apply_delta`, 5 levels per side | 212 ns |
-| `apply_delta`, 20 levels per side | 837 ns |
-| `apply_snapshot`, 10 levels per side | 927 ns |
-| `apply_snapshot`, 100 levels per side | 2.21 µs |
-| `apply_snapshot`, 200 levels per side | 3.76 µs |
-| `bbo` | 68 ns |
-| `snapshot`, any depth | ~470 ns |
-| `Side::best` | 1.4 ns |
-| `f64_to_scale9` | 3.1 ns |
-| 100,000 sequential deltas | 14.4 ms (≈6.9M deltas/sec) |
+| `apply_delta`, 1 level per side | 122 ns |
+| `apply_delta`, 5 levels per side | 192 ns |
+| `apply_delta`, 20 levels per side | 834 ns |
+| `apply_snapshot`, 10 levels per side | 867 ns |
+| `apply_snapshot`, 100 levels per side | 2.34 µs |
+| `apply_snapshot`, 200 levels per side | 4.02 µs |
+| `bbo` | 63 ns |
+| `snapshot`, depth 5 | 338 ns |
+| `snapshot`, depth 100 | 364 ns |
+| `Side::best` | 1.3 ns |
+| `f64_to_scale9` | 3.9 ns |
+| 100,000 sequential deltas | 13.2 ms (≈7.6M deltas/sec) |
 
 Three things worth reading off that table:
 
-- **`apply_delta` is about 19 ns per level on top of a fixed 110 ns.** The fixed part is
-  the map probe, input validation, the write lock and the sequence check; the per-level
-  part is the scan and the in-place update. Each benchmark row updates that many levels on *both* sides,
-  so the 20-level row touches 40 levels. It updates levels 5 to 24 from the top, so most
-  of them fall past the 16-level linear scan into the binary-search path; updates at the
-  very top are cheaper. An earlier version of this table showed the call as flat in the number
-  of levels, which was a benchmark bug: it resubmitted the same sequence number and
-  measured the duplicate short-circuit.
-- **`snapshot` is flat in `depth`, and that is a wart, not a feature.** Asking for 5 levels
-  costs the same ~470 ns as asking for 100, because the book is cloned in full and then
-  truncated. If you only need top of book, `bbo` is about 7× cheaper. This is tracked in
+- **`apply_delta` costs about 105 ns fixed, and the per-level cost grows with depth.** The
+  fixed part is the map probe, input validation, the write lock and the sequence check.
+  The per-level part is roughly 18 ns for the first few levels, 25 ns by level 10 and 52 ns
+  by level 20, because each row updates levels 5 to 24 from the top on *both* sides: the
+  shallow ones are served by the 16-level linear scan, the deeper ones fall into the
+  binary-search path and shift more of the array. An earlier version of this section quoted
+  a flat 19 ns per level, which only ever held over the first few.
+- **`snapshot` is nearly flat in `depth`, and that is a wart, not a feature.** Asking for 5
+  levels costs 338 ns against 364 ns for 100, because the book is cloned in full and then
+  truncated; the 8 % difference is the truncation, not the copy. If you only need top of
+  book, `bbo` is about 5× cheaper. This is tracked in
   [#2](https://github.com/anaxo-io/depthbook/issues/2).
 - **`Scale9` costs nothing.** Wrapping prices in a distinct type rather than using a bare
   `i64` left every benchmark within noise of the untyped version, which is what
   `#[repr(transparent)]` and inlined accessors should give you.
 
-Concurrency benchmarks measure whole batches rather than single calls: `concurrent_reads/8`
-runs 8 threads doing 1,000 reads each in 1.75 ms total, and `write_with_concurrent_reads`
-performs 100 writes against 4 reader threads, started behind a barrier so they are
-spinning on `snapshot` before the first write, in 371 µs.
+**No concurrency numbers are published here.** `concurrent_reads` and
+`write_with_concurrent_reads` exist in [`benches/store_ops.rs`](benches/store_ops.rs), but
+threads inherit the parent's CPU affinity, so a run pinned to one isolated core serialises
+every reader onto that core. The measured times scale almost exactly linearly with thread
+count, which is the signature of that serialisation rather than of contention. Measuring
+them properly needs a core per thread, `DEPTHBOOK_PIN=2,3,4,5,6,7` on this machine, and
+they have not been re-measured that way.
 
 ### Side layout
+
+```bash
+DEPTHBOOK_PIN=2 cargo bench --bench side_layout
+```
 
 David Gross's CppCon 2024 talk *When Nanoseconds Matter* makes two claims about
 price-level arrays: store them with the best price at the end so top-of-book inserts move
@@ -190,27 +209,46 @@ search on the levels that actually get touched.
 [`benches/side_layout.rs`](benches/side_layout.rs) tests both, plus two standard-library
 baselines, against this crate's original layout on a 1,000-update stream where the
 distance from the best level is geometric, a fifth of updates are deletes, and deleted
-levels get re-added. Same machine as above.
+levels get re-added. Same machine and command conditions as above.
 
 | Layout | stream, 50 levels | stream, 200 levels | update best, 200 | add+remove at top, 200 | add+remove mid, 200 |
 | --- | --- | --- | --- | --- | --- |
-| `BTreeMap<Scale9, Scale9>` | 26.9 µs | 30.2 µs | 14.1 ns | 49.0 ns | 52.5 ns |
-| `Vec<Level>`, best-first, binary search | 27.5 µs | 44.6 µs | 14.0 ns | 166.4 ns | 114.4 ns |
-| fixed array, best-first, binary search (v0.3.0) | 25.2 µs | 42.8 µs | 12.6 ns | 163.8 ns | 112.1 ns |
-| fixed array, best-last, binary search | 20.8 µs | 25.4 µs | 12.6 ns | 31.8 ns | 111.5 ns |
-| fixed array, best-first, linear scan | 12.7 µs | 28.3 µs | 2.9 ns | 120.6 ns | 166.3 ns |
-| fixed array, best-last, linear scan | 8.2 µs | 8.2 µs | 4.6 ns | 12.1 ns | 194.4 ns |
-| fixed array, best-last, scan 16 then binary (v0.4.0) | 10.2 µs | 10.2 µs | 4.1 ns | 13.3 ns | 125.6 ns |
+| `BTreeMap<Scale9, Scale9>` | 22.0 µs | 25.4 µs | 14.3 ns | 45.1 ns | 41.8 ns |
+| `Vec<Level>`, best-first, binary search | 21.1 µs | 33.9 µs | 16.2 ns | 126 ns | 104 ns |
+| fixed array, best-first, binary search (v0.3.0) | 20.2 µs | 31.8 µs | 15.6 ns | 124 ns | 91.2 ns |
+| fixed array, best-last, binary search | 14.7 µs | 19.1 µs | 14.8 ns | 46.2 ns | 91.9 ns |
+| fixed array, best-first, linear scan | 8.39 µs | 17.3 µs | 2.90 ns | 82.3 ns | 128 ns |
+| fixed array, best-last, linear scan | 5.36 µs | 5.33 µs | 3.93 ns | 12.1 ns | 136 ns |
+| fixed array, best-last, scan 16 then binary (v0.4.0) | 7.33 µs | 7.36 µs | 4.75 ns | 14.0 ns | 100 ns |
 
-Two standard-library baselines are included because "why not a `BTreeMap`?" is the
-question a fixed array has to answer. It does, but only after the layout change: the
-original best-first array is no better than a plain `Vec` and loses to `BTreeMap` at 200
-levels, because every top-of-book insert shifts the whole array. Reversing the array
-makes the side flat in depth, the linear scan makes the common case about three times
-cheaper, and pure linear pays for it on deep inserts. `BTreeMap` remains the best
-structure for inserts deep in the book, at about half the cost, which is the trade being
-made here: a book that updates at the top constantly and in the middle rarely. The hybrid
-keeps the top-of-book win and bounds the deep case, so that is what `Side` now uses.
+There is no single winner, and which layout is best depends entirely on where in the book
+the updates land.
+
+**Scanning from the best end is O(1) for top-of-book work; binary search is O(log N).**
+Going from 50 to 200 levels, the three scanning layouts do not move on `update best`:
+2.90 to 2.90 ns, 3.91 to 3.93 ns, and 4.75 to 4.75 ns. The four binary-search layouts all
+grow: `BTreeMap` from 11.1 to 14.3 ns and best-last binary search from 11.6 to 14.8 ns.
+That is the talk's second claim, confirmed.
+
+**Best-last is what makes the stream flat in depth.** Best-last linear scan holds at
+5.36 and 5.33 µs across the fourfold depth increase, and the shipped hybrid at 7.33 and
+7.36 µs, while best-first linear scan doubles from 8.39 to 17.3 µs because a top-of-book
+insert still shifts everything below it. That is the talk's first claim, confirmed, and it
+is worth more than the scan on this workload.
+
+**`BTreeMap` wins deep in the book, by a lot.** At 41.8 ns for an insert and removal in
+the middle of a 200-level side it beats every array layout, and beats the shipped hybrid
+by a factor of 2.4. An array has to move memory where a tree relinks pointers.
+
+So the trade is: the array layouts buy top-of-book speed, roughly 3× on the stream and 3 to
+4× on an insert at the top, and pay for it in the middle of the book. That suits a feed
+whose updates cluster near the touch, which is what the geometric distance in this
+benchmark models and what venue L2 feeds actually look like. A workload that rewrites deep
+levels uniformly should use a `BTreeMap` instead, and this crate would be the wrong choice
+for it. Between the two best array layouts, pure best-last linear scan is fastest on every
+top-of-book measure but worst of all seven in the middle at 136 ns; the shipped hybrid
+gives up 38 % on the stream to cut the middle case to 100 ns. That bound is why `Side`
+uses the hybrid.
 
 ## Contributing
 

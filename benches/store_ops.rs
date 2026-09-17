@@ -5,7 +5,7 @@
 //! - Sustained throughput: 100k updates/s per instrument
 //! - Store capacity: 1000 instruments without degradation
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use depthbook::store::BookStore;
 use depthbook::types::Level;
 use depthbook::Scale9;
@@ -347,19 +347,30 @@ fn bench_staleness_check(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    orderbook_store_benches,
-    bench_apply_snapshot,
-    bench_apply_delta,
-    bench_get_snapshot,
-    bench_get_bbo,
-    bench_concurrent_reads,
-    bench_write_with_concurrent_reads,
-    bench_sustained_throughput,
-    bench_multi_instrument_capacity,
-    bench_staleness_check
-);
-criterion_main!(orderbook_store_benches);
+mod common;
+
+// `criterion_main!` generates `main` and leaves no hook before it, so the entry point is
+// written out instead: pinning has to happen before the first measurement.
+//
+// Threads spawned by the concurrent benchmarks inherit this mask, so pinning this file to
+// a single core serialises them. Name at least as many cores as the widest benchmark has
+// threads (`concurrent_reads/8` uses eight) or filter those benchmarks out.
+fn main() {
+    common::pin_from_env();
+    let mut c = Criterion::default().configure_from_args();
+
+    bench_apply_snapshot(&mut c);
+    bench_apply_delta(&mut c);
+    bench_get_snapshot(&mut c);
+    bench_get_bbo(&mut c);
+    bench_concurrent_reads(&mut c);
+    bench_write_with_concurrent_reads(&mut c);
+    bench_sustained_throughput(&mut c);
+    bench_multi_instrument_capacity(&mut c);
+    bench_staleness_check(&mut c);
+
+    c.final_summary();
+}
 
 fn now_ns() -> u64 {
     std::time::SystemTime::now()

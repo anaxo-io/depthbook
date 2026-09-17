@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion};
 use depthbook::decimal::f64_to_scale9;
 use depthbook::intern::InternedString;
 use depthbook::types::{Book, Level, Side};
@@ -210,20 +210,27 @@ fn benchmark_realistic_order_book_updates(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    benchmark_level_creation,
-    benchmark_side_insert,
-    benchmark_side_update,
-    benchmark_side_remove,
-    benchmark_side_best,
-    benchmark_side_depth_within_bps,
-    benchmark_snapshot_creation,
-    benchmark_snapshot_mid_price,
-    benchmark_snapshot_to_json,
-    benchmark_interned_string_creation,
-    benchmark_interned_string_dedup,
-    benchmark_decimal_conversion,
-    benchmark_realistic_order_book_updates
-);
-criterion_main!(benches);
+mod common;
+
+// `criterion_main!` generates `main` and leaves no hook before it, so the entry point is
+// written out instead: pinning has to happen before the first measurement.
+fn main() {
+    common::pin_from_env();
+    let mut c = Criterion::default().configure_from_args();
+
+    benchmark_level_creation(&mut c);
+    benchmark_side_insert(&mut c);
+    benchmark_side_update(&mut c);
+    benchmark_side_remove(&mut c);
+    benchmark_side_best(&mut c);
+    benchmark_side_depth_within_bps(&mut c);
+    benchmark_snapshot_creation(&mut c);
+    benchmark_snapshot_mid_price(&mut c);
+    benchmark_snapshot_to_json(&mut c);
+    benchmark_interned_string_creation(&mut c);
+    benchmark_interned_string_dedup(&mut c);
+    benchmark_decimal_conversion(&mut c);
+    benchmark_realistic_order_book_updates(&mut c);
+
+    c.final_summary();
+}

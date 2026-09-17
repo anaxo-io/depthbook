@@ -4,7 +4,7 @@
 //! stream. See the "When Nanoseconds Matter" (D. Gross, CppCon 2024) reversed-vector
 //! and linear-search slides for the motivation.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use depthbook::{Level, Scale9, MAX_LEVELS};
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -273,5 +273,13 @@ fn all(c: &mut Criterion) {
     run::<Side<true, 16>>(c, "back_hybrid16");
 }
 
-criterion_group!(benches, all);
-criterion_main!(benches);
+mod common;
+
+// `criterion_main!` generates `main` and leaves no hook before it, so the entry point is
+// written out instead: pinning has to happen before the first measurement.
+fn main() {
+    common::pin_from_env();
+    let mut c = Criterion::default().configure_from_args();
+    all(&mut c);
+    c.final_summary();
+}

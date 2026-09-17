@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Benchmark core pinning. `DEPTHBOOK_PIN=2 cargo bench` confines a run to named cores via
+  `sched_setaffinity`; unset or empty means unpinned, which stays the default. Every run
+  prints `pinned to cores [2]` or `unpinned` as its first line, so a pasted result records
+  how it was measured. The helper is `benches/common/mod.rs`, and the three bench binaries
+  now have an explicit `main` because `criterion_main!` leaves no hook before it. `libc`
+  is a new dev-dependency, already present in the lock file as a transitive dependency of
+  criterion and proptest.
+
+### Changed
+
+- **All published benchmark numbers re-measured** on a Scaleway Elastic Metal EM-A116X
+  (Intel Xeon E3-1231 v3) booted with `isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7` and the
+  `performance` governor, pinned to one isolated core. The README now states those
+  conditions and the exact command next to every table.
+
+  What pinning changed: on its own, nothing worth having. On a shared machine, pinning
+  without core isolation left the outlier rate unchanged (7.0 % against 7.3 %) and made
+  run-to-run medians *less* stable (2.6 % spread against 3.6 %), because affinity confines
+  the benchmark without reserving the core. Combined with `isolcpus`, the median confidence
+  interval across 98 benchmarks is 0.20 % of the median, against 2.4 % mean on the previous
+  shared machine. The isolation is what bought the stability; pinning is what makes the
+  isolation usable. The two figures come from different machines, so that is not a clean
+  before-and-after for pinning alone.
+
+  Three previously published claims are contradicted by the new data and have been
+  corrected rather than silently replaced:
+
+  - `apply_delta` was described as costing a flat 19 ns per level above a fixed 110 ns. The
+    per-level cost in fact grows with depth, from about 18 ns for the first few levels to
+    52 ns by level 20, as deeper levels fall past the 16-level linear scan.
+  - `snapshot` was described as flat in `depth` at about 470 ns, and `bbo` as 7× cheaper.
+    It is 338 ns at depth 5 rising 8 % to 364 ns at depth 100, and `bbo` is about 5×
+    cheaper.
+  - The concurrency figures (`concurrent_reads/8` at 1.75 ms, `write_with_concurrent_reads`
+    at 371 µs) have been **withdrawn, not updated**. Threads inherit the parent's affinity,
+    so the pinned run serialised every reader onto one core; the times scale linearly with
+    thread count, which is that serialisation rather than contention. Measuring them needs
+    a core per thread and has not been done.
+
+  The side-layout comparison keeps its ordering on every measure, and the conclusion that
+  `Side` should use the best-last hybrid is unchanged.
+
 ## [0.6.0] - 2026-09-16
 
 ### Changed
