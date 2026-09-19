@@ -61,6 +61,26 @@ pub struct Side {
     count: usize,
 }
 
+/// What [`Side::insert_outcome`] did to the side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Insertion {
+    /// A new price level was added.
+    Inserted,
+    /// An existing price level had its quantity replaced.
+    Updated,
+    /// An existing price level was removed, the incoming quantity being zero.
+    Removed,
+    /// Nothing changed: a zero quantity at a price the side does not hold.
+    Ignored,
+    /// The side was full, so a level was discarded to keep the book sorted: either the
+    /// worst resting level, evicted to make room, or the incoming level itself when it
+    /// was worse than everything present.
+    ///
+    /// The book is no longer a faithful copy of the venue's below the top
+    /// [`MAX_LEVELS`] levels. Counted in `Stats::levels_dropped`.
+    Dropped,
+}
+
 impl Side {
     /// Create an empty side.
     ///
@@ -115,7 +135,9 @@ impl Side {
     /// descending for bids, ascending for asks.
     ///
     /// Returns `true` if a new level was inserted, `false` if an existing one was updated,
-    /// removed, or the side was full and the level was dropped.
+    /// removed, or the side was full and the level was dropped. Those last cases are not
+    /// distinguishable from the return value; use [`Side::insert_outcome`] when the
+    /// difference matters.
     ///
     /// # Examples
     /// ```
@@ -132,30 +154,58 @@ impl Side {
     /// assert_eq!(bids.best().unwrap().qty, f64_to_scale9(2.0));
     /// ```
     pub fn insert(&mut self, level: Level, is_bid: bool) -> bool {
+        self.insert_outcome(level, is_bid) == Insertion::Inserted
+    }
+
+    /// Insert a level and report exactly what happened.
+    ///
+    /// Same behaviour as [`Side::insert`], but distinguishes an update from a removal and
+    /// from a level lost to the side being full, which the boolean cannot.
+    ///
+    /// # Examples
+    /// ```
+    /// use depthbook::{f64_to_scale9, Insertion, Level, Side, MAX_LEVELS};
+    ///
+    /// let mut bids = Side::new();
+    /// let level = Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0));
+    /// assert_eq!(bids.insert_outcome(level, true), Insertion::Inserted);
+    ///
+    /// let deeper = Level::new(f64_to_scale9(50_000.0), f64_to_scale9(2.0));
+    /// assert_eq!(bids.insert_outcome(deeper, true), Insertion::Updated);
+    ///
+    /// // Fill the side, then add one more: something has to go.
+    /// for i in 1..MAX_LEVELS {
+    ///     bids.insert(Level::new(f64_to_scale9(50_000.0 - i as f64), f64_to_scale9(1.0)), true);
+    /// }
+    /// assert_eq!(bids.count(), MAX_LEVELS);
+    /// let extra = Level::new(f64_to_scale9(50_001.0), f64_to_scale9(1.0));
+    /// assert_eq!(bids.insert_outcome(extra, true), Insertion::Dropped);
+    /// ```
+    pub fn insert_outcome(&mut self, level: Level, is_bid: bool) -> Insertion {
         let insert_pos = self.find_insert_position(level.price, is_bid);
 
         if insert_pos < self.count && self.levels[insert_pos].price == level.price {
             if level.is_empty() {
                 self.remove_at(insert_pos);
-            } else {
-                self.levels[insert_pos] = level;
+                return Insertion::Removed;
             }
-            return false;
+            self.levels[insert_pos] = level;
+            return Insertion::Updated;
         }
 
         if level.is_empty() {
-            return false;
+            return Insertion::Ignored;
         }
 
         if self.count == MAX_LEVELS {
-            // The worst level sits at index 0. Drop it to make room, unless the new level
-            // would itself be the worst.
+            // The worst level sits at index 0. Drop it to make room, unless the incoming
+            // level is itself worse than everything here, in which case it is the one lost.
             if insert_pos == 0 {
-                return false;
+                return Insertion::Dropped;
             }
             self.levels.copy_within(1..insert_pos, 0);
             self.levels[insert_pos - 1] = level;
-            return true;
+            return Insertion::Dropped;
         }
 
         self.levels
@@ -163,7 +213,7 @@ impl Side {
         self.levels[insert_pos] = level;
         self.count += 1;
 
-        true
+        Insertion::Inserted
     }
 
     /// Remove the level at `price`, returning whether it was found.
@@ -551,10 +601,48 @@ impl Book {
         }
     }
 
-    /// Midpoint between the best bid and best ask.
+    /// Whether the best bid is at or above the best ask.
+    ///
+    /// A book in that state should not be priced from: [`Book::mid_price`] returns a
+    /// value outside both sides and [`Book::spread`] a negative one, and neither is an
+    /// error the caller can otherwise see. It is the ordinary symptom of a delta applied
+    /// out of order, or of a venue publishing a bad update, which is exactly what the
+    /// rest of this crate works to surface.
+    ///
+    /// Equality counts: a locked book, where bid and ask meet, is reported as crossed,
+    /// because a zero spread is no more tradeable than a negative one.
+    ///
+    /// A book with an empty side is not crossed; there is nothing to compare.
+    ///
+    /// # Examples
+    /// ```
+    /// use depthbook::{f64_to_scale9, Book, InternedString, Level};
+    ///
+    /// let mut book = Book::new(
+    ///     InternedString::new("binance"),
+    ///     InternedString::new("BTC-USDT"),
+    ///     1_700_000_000_000_000_000,
+    ///     42,
+    /// );
+    /// book.bids.insert(Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)), true);
+    /// book.asks.insert(Level::new(f64_to_scale9(50_010.0), f64_to_scale9(1.0)), false);
+    /// assert!(!book.is_crossed());
+    ///
+    /// // A late delta lifts the bid through the ask.
+    /// book.bids.insert(Level::new(f64_to_scale9(50_020.0), f64_to_scale9(1.0)), true);
+    /// assert!(book.is_crossed());
+    /// ```
+    pub fn is_crossed(&self) -> bool {
+        match (self.bids.best(), self.asks.best()) {
+            (Some(bid), Some(ask)) => bid.price >= ask.price,
+            _ => false,
+        }
+    }
+
+    /// Midpoint of the best bid and the best ask.
     ///
     /// Returns `None` if either side is empty. A crossed book yields a midpoint outside
-    /// both sides rather than an error; see issue #1.
+    /// both sides rather than an error, so check [`Book::is_crossed`] before trusting it.
     ///
     /// # Examples
     /// ```
@@ -583,7 +671,8 @@ impl Book {
     /// Difference between the best ask and the best bid.
     ///
     /// Returns `None` if either side is empty or the difference overflows. A crossed book
-    /// yields a negative spread rather than an error; see issue #1.
+    /// yields a negative spread rather than an error, so check [`Book::is_crossed`] before
+    /// trusting it.
     ///
     /// # Examples
     /// ```
@@ -846,6 +935,92 @@ mod tests {
         assert_eq!(back.bids.count(), 1);
         assert_eq!(back.bids.best().unwrap().price, f64_to_scale9(50_000.0));
         assert_eq!(back.asks.best().unwrap().price, f64_to_scale9(50_010.0));
+    }
+
+    #[test]
+    fn is_crossed_detects_crossed_and_locked_books() {
+        let mut b = book();
+        // Empty sides cannot be compared, so they are not crossed.
+        assert!(!b.is_crossed());
+        b.bids.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            true,
+        );
+        assert!(!b.is_crossed(), "one empty side is still not crossed");
+
+        b.asks.insert(
+            Level::new(f64_to_scale9(50_010.0), f64_to_scale9(1.0)),
+            false,
+        );
+        assert!(!b.is_crossed());
+
+        // Locked: bid meets ask.
+        b.asks.insert(
+            Level::new(f64_to_scale9(50_000.0), f64_to_scale9(1.0)),
+            false,
+        );
+        assert!(b.is_crossed());
+        assert_eq!(b.spread(), Some(Scale9::ZERO));
+
+        // Crossed: bid through ask. mid_price sits outside both sides and spread is
+        // negative, which is exactly why the flag exists.
+        b.bids.insert(
+            Level::new(f64_to_scale9(50_020.0), f64_to_scale9(1.0)),
+            true,
+        );
+        assert!(b.is_crossed());
+        assert_eq!(b.spread(), Some(f64_to_scale9(-20.0)));
+        assert_eq!(b.mid_price(), Some(f64_to_scale9(50_010.0)));
+    }
+
+    #[test]
+    fn insert_outcome_distinguishes_what_the_bool_cannot() {
+        let mut bids = Side::new();
+        let at = |p: f64, q: f64| Level::new(f64_to_scale9(p), f64_to_scale9(q));
+
+        assert_eq!(
+            bids.insert_outcome(at(50_000.0, 1.0), true),
+            Insertion::Inserted
+        );
+        assert_eq!(
+            bids.insert_outcome(at(50_000.0, 2.0), true),
+            Insertion::Updated
+        );
+        assert_eq!(
+            bids.insert_outcome(at(50_000.0, 0.0), true),
+            Insertion::Removed
+        );
+        assert_eq!(
+            bids.insert_outcome(at(50_000.0, 0.0), true),
+            Insertion::Ignored
+        );
+        assert_eq!(bids.count(), 0);
+
+        // Fill the side, then push at both ends.
+        for i in 0..MAX_LEVELS {
+            bids.insert(at(50_000.0 - i as f64, 1.0), true);
+        }
+        assert_eq!(bids.count(), MAX_LEVELS);
+
+        // Better than everything: the worst resting level is evicted.
+        assert_eq!(
+            bids.insert_outcome(at(50_001.0, 1.0), true),
+            Insertion::Dropped
+        );
+        assert_eq!(bids.count(), MAX_LEVELS);
+        assert_eq!(bids.best().unwrap().price, f64_to_scale9(50_001.0));
+
+        // Worse than everything: the incoming level is the one discarded.
+        assert_eq!(bids.insert_outcome(at(1.0, 1.0), true), Insertion::Dropped);
+        assert_eq!(bids.count(), MAX_LEVELS);
+        assert!(bids.levels().all(|l| l.price != f64_to_scale9(1.0)));
+
+        // A full side still updates in place without reporting a drop.
+        let resting = bids.best().unwrap().price;
+        assert_eq!(
+            bids.insert_outcome(Level::new(resting, f64_to_scale9(9.0)), true),
+            Insertion::Updated
+        );
     }
 
     #[test]

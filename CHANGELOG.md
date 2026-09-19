@@ -7,18 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Published to crates.io.** Depend on `depthbook = "0.7"` rather than a git tag. The
-  upload runs in the shared release workflow through Trusted Publishing; `release.toml`
-  keeps `publish = false`, because a published version can be yanked but never replaced
-  or reused, so it must not be possible to do by accident from a laptop.
-- `CLAUDE.md` and `release.toml` are excluded from the published tarball. They are
-  repository tooling, and both landed after v0.6.0, so this is the first release that
-  would otherwise have shipped them.
-
 ### Added
 
+- `Book::is_crossed`, reporting whether the best bid is at or above the best ask. A
+  crossed book is the ordinary symptom of a delta applied out of order, and `mid_price`
+  and `spread` answer it with a plausible-looking number rather than an error, so until
+  now there was no way to tell. A locked book, bid meeting ask, counts as crossed, since
+  a zero spread is no more tradeable than a negative one. Closes
+  [#1](https://github.com/anaxo-io/depthbook/issues/1).
+- `Side::insert_outcome` and the `Insertion` enum, reporting whether an insert added,
+  updated, removed, ignored, or dropped a level. `Side::insert` keeps its boolean and
+  delegates to it, so nothing breaks.
+- `Stats::levels_dropped`, counting price levels discarded because a side was already
+  full. A book could previously stop being a faithful copy of the venue's with nothing
+  recording it. This is the first half of
+  [#3](https://github.com/anaxo-io/depthbook/issues/3); the second, making the 200-level
+  capacity configurable, needs a breaking change and stays open.
 - Benchmark core pinning. `DEPTHBOOK_PIN=2 cargo bench` confines a run to named cores via
   `sched_setaffinity`; unset or empty means unpinned, which stays the default. Every run
   prints `pinned to cores [2]` or `unpinned` as its first line, so a pasted result records
@@ -29,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Published to crates.io.** Depend on `depthbook = "0.7"` rather than a git tag. The
+  upload runs in the shared release workflow through Trusted Publishing; `release.toml`
+  keeps `publish = false`, because a published version can be yanked but never replaced
+  or reused, so it must not be possible to do by accident from a laptop.
+- `CLAUDE.md` and `release.toml` are excluded from the published tarball. They are
+  repository tooling, and both landed after v0.6.0, so this is the first release that
+  would otherwise have shipped them.
 - **All published benchmark numbers re-measured** on a Scaleway Elastic Metal EM-A116X
   (Intel Xeon E3-1231 v3) booted with `isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7` and the
   `performance` governor, pinned to one isolated core. The README now states those

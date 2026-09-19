@@ -3,7 +3,7 @@
 use crate::book_state::BookState;
 use crate::error::{Error, Result};
 use crate::intern::InternedString;
-use crate::types::{Book, Level};
+use crate::types::{Book, Insertion, Level};
 use dashmap::DashMap;
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
@@ -74,6 +74,12 @@ pub struct Stats {
     pub deltas_applied: u64,
     /// Number of snapshots rejected for being older than the book they would replace.
     pub snapshots_rejected: u64,
+    /// Number of price levels discarded because a side was already full.
+    ///
+    /// Non-zero means a book is no longer a faithful copy of the venue's below the top
+    /// [`MAX_LEVELS`](crate::MAX_LEVELS) levels. Harmless for top-of-book work, and the
+    /// reason this crate is the wrong choice for full-depth archival.
+    pub levels_dropped: u64,
 }
 
 /// Stores order books keyed by venue and instrument.
@@ -112,6 +118,7 @@ pub struct BookStore {
     snapshots_applied: AtomicU64,
     deltas_applied: AtomicU64,
     snapshots_rejected: AtomicU64,
+    levels_dropped: AtomicU64,
 }
 
 /// Reject levels no feed can legitimately send.
@@ -171,16 +178,18 @@ impl BookStore {
 
         // Feeds send snapshots best-first. Levels are stored best-last, so inserting in
         // reverse appends each one instead of shifting the whole array.
+        let mut dropped = 0u64;
         for level in bids.iter().rev() {
-            if !level.is_empty() {
-                book.bids.insert(*level, true);
+            if !level.is_empty() && book.bids.insert_outcome(*level, true) == Insertion::Dropped {
+                dropped += 1;
             }
         }
         for level in asks.iter().rev() {
-            if !level.is_empty() {
-                book.asks.insert(*level, false);
+            if !level.is_empty() && book.asks.insert_outcome(*level, false) == Insertion::Dropped {
+                dropped += 1;
             }
         }
+        self.record_drops(venue, inst, dropped);
 
         let state = self.get_or_create(venue, inst, seq, ts);
         state.replace(book, ts).inspect_err(|e| {
@@ -227,14 +236,21 @@ impl BookStore {
                 inst: inst.to_string(),
             })?;
 
+        // Counted inside the closure but reported outside it, so the write lock is not
+        // held across the atomic and the tracing call.
+        let mut dropped = 0u64;
         let applied = state
             .apply(
                 |book| {
                     for level in bids {
-                        book.bids.insert(*level, true);
+                        if book.bids.insert_outcome(*level, true) == Insertion::Dropped {
+                            dropped += 1;
+                        }
                     }
                     for level in asks {
-                        book.asks.insert(*level, false);
+                        if book.asks.insert_outcome(*level, false) == Insertion::Dropped {
+                            dropped += 1;
+                        }
                     }
                 },
                 seq,
@@ -255,6 +271,7 @@ impl BookStore {
         if !applied {
             return Ok(());
         }
+        self.record_drops(venue, inst, dropped);
         self.deltas_applied.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
@@ -312,6 +329,20 @@ impl BookStore {
         self.books.remove(&(venue, inst) as &dyn KeyLike).is_some()
     }
 
+    /// Count levels lost to a full side, and say so once per batch rather than per level.
+    fn record_drops(&self, venue: &str, inst: &str, dropped: u64) {
+        if dropped == 0 {
+            return;
+        }
+        self.levels_dropped.fetch_add(dropped, Ordering::Relaxed);
+        tracing::debug!(
+            venue,
+            inst,
+            dropped,
+            "side full; deepest levels discarded to keep the book sorted"
+        );
+    }
+
     /// Current counters. See [`Stats`].
     pub fn stats(&self) -> Stats {
         Stats {
@@ -320,6 +351,7 @@ impl BookStore {
             snapshots_applied: self.snapshots_applied.load(Ordering::Relaxed),
             deltas_applied: self.deltas_applied.load(Ordering::Relaxed),
             snapshots_rejected: self.snapshots_rejected.load(Ordering::Relaxed),
+            levels_dropped: self.levels_dropped.load(Ordering::Relaxed),
         }
     }
 
@@ -567,6 +599,49 @@ mod tests {
             .apply_snapshot("binance", "BTC-USDT", &one(3.0), &one(4.0), 1, TS)
             .unwrap();
         assert_eq!(store.snapshot("binance", "BTC-USDT", 0).unwrap().seq, 1);
+    }
+
+    #[test]
+    fn dropped_levels_are_counted() {
+        let store = BookStore::new();
+        let bids: Vec<Level> = (0..crate::MAX_LEVELS + 5)
+            .map(|i| Level::new(f64_to_scale9(50_000.0 - i as f64), f64_to_scale9(1.0)))
+            .collect();
+
+        // A snapshot deeper than the side can hold loses its worst levels.
+        store
+            .apply_snapshot("binance", "BTC-USDT", &bids, &one(60_000.0), 1, TS)
+            .unwrap();
+        assert_eq!(store.stats().levels_dropped, 5);
+        let book = store.snapshot("binance", "BTC-USDT", 0).unwrap();
+        assert_eq!(book.bids.count(), crate::MAX_LEVELS);
+        assert_eq!(book.bids.best().unwrap().price, f64_to_scale9(50_000.0));
+
+        // A delta adding a new level to a full side drops another one.
+        store
+            .apply_delta(
+                "binance",
+                "BTC-USDT",
+                &[Level::new(f64_to_scale9(50_001.0), f64_to_scale9(1.0))],
+                &[],
+                2,
+                TS,
+            )
+            .unwrap();
+        assert_eq!(store.stats().levels_dropped, 6);
+
+        // Updating a level that is already there is not a drop.
+        store
+            .apply_delta(
+                "binance",
+                "BTC-USDT",
+                &[Level::new(f64_to_scale9(50_001.0), f64_to_scale9(3.0))],
+                &[],
+                3,
+                TS,
+            )
+            .unwrap();
+        assert_eq!(store.stats().levels_dropped, 6);
     }
 
     #[test]
