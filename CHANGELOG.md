@@ -35,10 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Published to crates.io.** Depend on `depthbook = "0.7"` rather than a git tag. The
-  upload runs in the shared release workflow through Trusted Publishing; `release.toml`
-  keeps `publish = false`, because a published version can be yanked but never replaced
-  or reused, so it must not be possible to do by accident from a laptop.
+- **Published to crates.io.** Depend on `depthbook = "0.7"` rather than a git tag. 0.7.0
+  was uploaded by hand, because Trusted Publishing cannot register a crate that does not
+  yet exist; from 0.8.0 the shared release workflow does it, with `publish: true` and
+  `id-token: write` in `.github/workflows/release.yml`. `release.toml` keeps
+  `publish = false` either way, because a published version can be yanked but never
+  replaced or reused, so it must not be possible to do by accident from a laptop.
 - `CLAUDE.md` and `release.toml` are excluded from the published tarball. They are
   repository tooling, and both landed after v0.6.0, so this is the first release that
   would otherwise have shipped them.
