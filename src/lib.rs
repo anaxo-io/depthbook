@@ -64,4 +64,4 @@ pub use decimal::{
 pub use error::{Error, Result};
 pub use intern::InternedString;
 pub use store::{BookStore, Stats};
-pub use types::{Book, Level, Side, MAX_LEVELS};
+pub use types::{Book, Insertion, Level, Side, MAX_LEVELS};
