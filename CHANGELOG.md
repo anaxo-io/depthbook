@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-19
+
 ### Added
 
 - `Book::is_crossed`, reporting whether the best bid is at or above the best ask. A
@@ -218,7 +220,8 @@ Initial release.
   intentional for top-of-book use but is not reported to the caller. Tracked in
   [#3](https://github.com/anaxo-io/depthbook/issues/3).
 
-[Unreleased]: https://github.com/anaxo-io/depthbook/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/anaxo-io/depthbook/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/anaxo-io/depthbook/releases/tag/v0.7.0
 [0.6.0]: https://github.com/anaxo-io/depthbook/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/anaxo-io/depthbook/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/anaxo-io/depthbook/compare/v0.3.0...v0.4.0
