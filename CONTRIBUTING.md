@@ -92,6 +92,33 @@ DEPTHBOOK_PIN=2,4,6,8,10,12,14,0 cargo bench --bench store_ops
 Pinning does not control CPU frequency, which on a `schedutil` governor is its own source
 of drift. The README records the governor in force for the published numbers.
 
+## Releasing
+
+The procedure is the organisation's, written once in
+[`anaxo-io/.github/RELEASING.md`](https://github.com/anaxo-io/.github/blob/main/RELEASING.md):
+changelog written as changes land, a version chosen by a person, one release commit, and a
+`vX.Y.Z` tag that triggers everything after. Read it before cutting a release.
+
+What is specific to this crate:
+
+- `cargo release X.Y.Z --execute` does the release commit, tag and push; `release.toml`
+  holds the configuration and sets `publish = false`. Dry-run first by omitting
+  `--execute`. Pull `main` before running it.
+- Nothing goes to crates.io. The name `depthbook` is free but unclaimed, and the crate is
+  consumed as a git dependency on a tag.
+- Pre-1.0, a breaking change bumps the minor, and breaking includes what no tool can read
+  off a commit subject: a raised MSRV, or a change to the JSON a `Book` serialises to,
+  since that is a wire format for anything storing snapshots.
+- A change to published benchmark numbers is not a release on its own, but the conditions
+  they were measured under belong in the changelog entry when they change. See
+  [Benchmarks](#benchmarks).
+- `.github/workflows/release.yml` calls the shared `release-rust.yml`, which verifies the
+  tag against `Cargo.toml`, runs `cargo package`, and creates the GitHub release from the
+  matching `CHANGELOG.md` section.
+- `v0.1.0` to `v0.6.0` were released by hand with `gh release create`, because a tag event
+  uses the workflow from the tagged commit and none of those tags predates a working one.
+  `v0.7.0` is the first automated release.
+
 ## Commit messages
 
 [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `perf:`, `refactor:`, `test:`, `chore:`.

@@ -1,0 +1,15 @@
+name: Release
+
+# Pushing a `vX.Y.Z` tag publishes the GitHub release for it. The work is done by the
+# organisation's shared workflow; the procedure is in
+# https://github.com/anaxo-io/.github/blob/main/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: anaxo-io/.github/.github/workflows/release-rust.yml@main
