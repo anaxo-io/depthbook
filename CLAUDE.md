@@ -56,6 +56,8 @@ measures the scheduler. `CONTRIBUTING.md` has the measurements that show this.
   https://github.com/anaxo-io/.github/blob/main/RELEASING.md; `CONTRIBUTING.md` has
   what is specific to this crate. Never re-copy the workflow body here — `release.yml`
   calls the shared one.
-- Nothing is published to crates.io. The name `depthbook` is free but unclaimed.
+- Published to crates.io; consumers depend on `depthbook = "0.7"`, not a git tag. The
+  upload happens in the shared release workflow through Trusted Publishing, never from a
+  local command — `release.toml` keeps `publish = false` and that stays.
 - `gh pr checks` returns nothing for this repo. Read status from
   `gh run list --json conclusion` and `gh run view <id> --json jobs` instead.

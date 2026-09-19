@@ -104,8 +104,10 @@ What is specific to this crate:
 - `cargo release X.Y.Z --execute` does the release commit, tag and push; `release.toml`
   holds the configuration and sets `publish = false`. Dry-run first by omitting
   `--execute`. Pull `main` before running it.
-- Nothing goes to crates.io. The name `depthbook` is free but unclaimed, and the crate is
-  consumed as a git dependency on a tag.
+- The crate is published to crates.io and consumed as `depthbook = "0.7"`. Publishing is
+  not a local command: `release.toml` keeps `publish = false`, and the shared release
+  workflow uploads through Trusted Publishing once a tag is pushed. A version can be
+  yanked but never replaced, so the tarball has to be right the first time.
 - Pre-1.0, a breaking change bumps the minor, and breaking includes what no tool can read
   off a commit subject: a raised MSRV, or a change to the JSON a `Book` serialises to,
   since that is a wire format for anything storing snapshots.

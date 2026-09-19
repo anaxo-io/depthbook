@@ -1,6 +1,8 @@
 # depthbook
 
 [![CI](https://github.com/anaxo-io/depthbook/actions/workflows/ci.yml/badge.svg)](https://github.com/anaxo-io/depthbook/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/depthbook.svg)](https://crates.io/crates/depthbook)
+[![docs.rs](https://img.shields.io/docsrs/depthbook)](https://docs.rs/depthbook)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/MSRV-1.85-blue.svg)](https://blog.rust-lang.org/)
 
@@ -24,7 +26,7 @@ is the better fit; this is a data structure you can drop into whatever you alrea
 
 ```toml
 [dependencies]
-depthbook = { git = "https://github.com/anaxo-io/depthbook", tag = "v0.6.0" }
+depthbook = "0.7"
 ```
 
 ```rust
