@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Published to crates.io.** Depend on `depthbook = "0.7"` rather than a git tag. The
+  upload runs in the shared release workflow through Trusted Publishing; `release.toml`
+  keeps `publish = false`, because a published version can be yanked but never replaced
+  or reused, so it must not be possible to do by accident from a laptop.
+- `CLAUDE.md` and `release.toml` are excluded from the published tarball. They are
+  repository tooling, and both landed after v0.6.0, so this is the first release that
+  would otherwise have shipped them.
+
 ### Added
 
 - Benchmark core pinning. `DEPTHBOOK_PIN=2 cargo bench` confines a run to named cores via
