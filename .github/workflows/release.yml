@@ -1,15 +1,22 @@
 name: Release
 
-# Pushing a `vX.Y.Z` tag publishes the GitHub release for it. The work is done by the
-# organisation's shared workflow; the procedure is in
-# https://github.com/anaxo-io/.github/blob/main/RELEASING.md.
+# Pushing a `vX.Y.Z` tag publishes the GitHub release for it, then the crate to crates.io
+# through Trusted Publishing. The work is done by the organisation's shared workflow; the
+# procedure is in https://github.com/anaxo-io/.github/blob/main/RELEASING.md.
 on:
   push:
     tags: ["v*"]
 
 permissions:
   contents: write
+  # Trusted Publishing: GitHub proves this workflow's identity to crates.io, so no
+  # long-lived registry token exists anywhere. Required even when `publish` is false: a
+  # called workflow cannot request more than the caller grants, and the shared workflow's
+  # publish job asks for it before the `if:` that would skip it is evaluated.
+  id-token: write
 
 jobs:
   release:
     uses: anaxo-io/.github/.github/workflows/release-rust.yml@main
+    with:
+      publish: true
